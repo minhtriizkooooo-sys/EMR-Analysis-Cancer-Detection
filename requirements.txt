@@ -1,10 +1,11 @@
 tensorflow-cpu==2.20.0
-numpy
+numpy==2.3.4
 pandas==2.2.3
 Pillow==10.4.0
 Flask==3.0.3
 gunicorn==23.0.0
-scipy
-h5py # Xóa pin phiên bản
+scipy==1.16.2
+h5py==3.15.1
 gdown==5.2.0
 openpyxl==3.1.5
+requests==2.32.5
