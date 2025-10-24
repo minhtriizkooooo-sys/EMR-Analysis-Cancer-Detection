@@ -29,7 +29,7 @@ IS_DUMMY_MODE = False
 # ==========================================================
 # CẤU HÌNH GOOGLE DRIVE VÀ MODEL
 # ==========================================================
-DRIVE_FILE_ID = "1ORV8tDkT03fxjRyaWU5liZ2bHQz3YQC"  # REPLACE WITH VALID ID
+DRIVE_FILE_ID = "1ORV8tDkT03fxjRyaWUq5liZ2bHQz3YQC"  # REPLACE WITH VALID ID
 MODEL_FILE_NAME = "best_weights_model.keras"
 MODEL_PATH = os.path.join(os.getcwd(), MODEL_FILE_NAME)
 MODEL_INPUT_SIZE = (224, 224)
@@ -79,3 +79,4 @@ def download_file_from_gdrive(file_id, destination, max_retries=3):
             if os.path.exists(destination):
                 model = load_model(destination)
  @System: * Today's date and time is 04:06 AM +07 on Saturday, October 25, 2025. *
+
