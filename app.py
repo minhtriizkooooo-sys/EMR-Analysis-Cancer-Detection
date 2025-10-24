@@ -126,7 +126,7 @@ def login():
     username = request.form.get("username")
     password = request.form.get("password")
     # => bạn thay logic login nếu muốn
-    if username == "admin" and password == "123":
+    if username == "user_demo" and password == "Test@123456":
         session["user"] = username
         flash("Đăng nhập thành công!", "success")
         return redirect(url_for("emr_profile"))
@@ -147,3 +147,4 @@ if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     logger.info(f"🚀 EMR AI – STARTING APP on port {port} – MODEL_LOADED: {MODEL_LOADED}")
     app.run(host="0.0.0.0", port=port, debug=False)
+
