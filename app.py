@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# app.py: EMR AI - FIXED BASE64 CRASH + REAL KERAS PREDICTION
+# app.py: EMR AI - FIXED GOOGLE DRIVE DOWNLOAD + REAL KERAS PREDICTION
 # CHỈ HIỂN THỊ THUMBNAIL 200x200 thay vì full image
 
 import base64
@@ -7,73 +7,93 @@ import os
 import io
 import logging
 import time
+import requests
 from PIL import Image
 from flask import (
     Flask, flash, redirect, render_template, request, session, url_for
 )
-
-# Thư viện cho Data Analysis (Pandas)
 import pandas as pd
-
-# ✅ THƯ VIỆN BỔ SUNG CHO TẢI FILE
 import gdown
+import tensorflow as tf
+import numpy as np
+from tensorflow.keras.models import load_model, Sequential
+from tensorflow.keras.layers import Dense, Input, Conv2D, Flatten
 
 # ==========================================================
-# KHỞI TẠO BIẾN TOÀN CỤC TRƯỚC KHI TẢI MODEL
+# KHỞI TẠO BIẾN TOÀN CỤC
 # ==========================================================
 MODEL = None
 MODEL_LOADED = False
-IS_DUMMY_MODE = False # ✅ BIẾN MỚI: Theo dõi trạng thái dummy/fixed mode
+IS_DUMMY_MODE = False
 
 # ==========================================================
-# ✅ NHỮNG THAY ĐỔI QUAN TRỌNG CHO MÔ HÌNH AI
+# CẤU HÌNH GOOGLE DRIVE VÀ MODEL
 # ==========================================================
+DRIVE_FILE_ID = "1ORV8tDkT03fxjRyaWU5liZ2bHQz3YQC"
+MODEL_FILE_NAME = "best_weights_model.keras"
+MODEL_PATH = os.path.join(os.getcwd(), MODEL_FILE_NAME)
+MODEL_INPUT_SIZE = (224, 224)
 
-try:
-    import tensorflow as tf
-    import numpy as np
-    from tensorflow.keras.models import load_model, Sequential
-    from tensorflow.keras.layers import Dense, Input, Conv2D, Flatten
-    
-    # Thiết lập logging cho phần AI
-    logger = logging.getLogger(__name__)
-    
-    # 2. CẤU HÌNH GOOGLE DRIVE VÀ MODEL
-    # === BẠN CẦN THAY THẾ ID FILE NÀY VỚI ID FILE KERAS CỦA BẠN ===
-    DRIVE_FILE_ID = "1ORV8tDkT03fxjRyaWU5liZ2bHQz3YQC"
-    MODEL_FILE_NAME = "best_weights_model.keras"
-    MODEL_PATH = os.path.join(os.getcwd(), MODEL_FILE_NAME)
-    MODEL_INPUT_SIZE = (224, 224) # Giả định kích thước input là 224x224
-    
-    # ✅ 3. HÀM TẢI FILE TỪ GOOGLE DRIVE (ĐÃ TRIỂN KHAI BẰNG GDOWN)
-    def download_file_from_gdrive(file_id, destination):
-        """
-        Tải file từ Google Drive. Trả về: (success: bool, is_dummy: bool).
-        """
-        # Kiểm tra nếu file đã tồn tại
-        if os.path.exists(destination):
-            logger.info(f"File đã tồn tại: {destination}. Bỏ qua tải xuống.")
-            return True, False # Tải thành công (từ đĩa), không phải dummy
-            
-        logger.info(f"Đang cố gắng tải model từ GDrive ID: {file_id} về {destination}...")
+# Thiết lập logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[logging.StreamHandler()]
+)
+logger = logging.getLogger(__name__)
+
+# ==========================================================
+# HÀM TẢI FILE TỪ GOOGLE DRIVE
+# ==========================================================
+def download_file_from_gdrive(file_id, destination, max_retries=3):
+    """
+    Tải file từ Google Drive với cơ chế thử lại và kiểm tra quyền truy cập.
+    Trả về: (success: bool, is_dummy: bool).
+    """
+    if os.path.exists(destination):
+        logger.info(f"File đã tồn tại: {destination}. Đang kiểm tra tính hợp lệ...")
         try:
-            # Tải file thực tế bằng gdown
+            # Kiểm tra xem file có phải là mô hình Keras hợp lệ
+            model = load_model(destination)
+            model.predict(np.zeros((1, MODEL_INPUT_SIZE[0], MODEL_INPUT_SIZE[1], 3)))
+            logger.info("✅ File tồn tại là mô hình Keras hợp lệ.")
+            return True, False
+        except Exception as e:
+            logger.warning(f"❌ File tồn tại nhưng không phải mô hình Keras hợp lệ: {e}. Tải lại...")
+            os.remove(destination)  # Xóa file không hợp lệ
+
+    logger.info(f"Đang cố gắng tải model từ GDrive ID: {file_id} về {destination}...")
+    url = f"https://drive.google.com/uc?id={file_id}&export=download"
+
+    for attempt in range(max_retries):
+        try:
+            # Kiểm tra quyền truy cập trước
+            response = requests.head(url, allow_redirects=True)
+            if response.status_code != 200:
+                logger.error(f"❌ Không thể truy cập file. Status code: {response.status_code}")
+                continue
+
+            # Tải file bằng gdown
             gdown.download(id=file_id, output=destination, quiet=False, fuzzy=True)
-            
             if os.path.exists(destination):
-                logger.info("✅ Tải xuống model thực tế hoàn tất.")
-                return True, False # Tải thành công, không phải dummy
+                # Kiểm tra tính hợp lệ của mô hình
+                model = load_model(destination)
+                model.predict(np.zeros((1, MODEL_INPUT_SIZE[0], MODEL_INPUT_SIZE[1], 3)))
+                logger.info("✅ Tải xuống và xác minh mô hình thực tế hoàn tất.")
+                return True, False
             else:
                 logger.error("❌ Tải xuống thất bại: File không tìm thấy sau khi chạy gdown.")
-                # Chuyển sang tạo dummy model nếu gdown thất bại
-                raise Exception("Gdown download failed.") 
-                
+                continue
+
         except Exception as e:
-            logger.error(f"❌ LỖI KHI TẢI FILE G-DRIVE: {e}. Đang chuyển sang tạo mô hình dummy.")
-            
-            # ⚠️ TẠO MÔ HÌNH DUMMY ĐỂ ĐẢM BẢO KHỞI CHẠY ỨNG DỤNG
+            logger.error(f"❌ Lỗi khi tải file GDrive (lần {attempt + 1}/{max_retries}): {e}")
+            if attempt < max_retries - 1:
+                time.sleep(2 ** attempt)  # Exponential backoff
+                continue
+
+            # Tạo mô hình dummy nếu tất cả các lần thử thất bại
+            logger.warning("⚠️ Chuyển sang tạo mô hình dummy...")
             try:
-                # Tạo một mô hình dummy nhỏ
                 dummy_model = Sequential([
                     Input(shape=(MODEL_INPUT_SIZE[0], MODEL_INPUT_SIZE[1], 3)),
                     Conv2D(8, (3, 3), activation='relu'),
@@ -83,98 +103,68 @@ try:
                 dummy_model.compile(optimizer='adam', loss='binary_crossentropy')
                 dummy_model.save(destination)
                 logger.info(f"✅ Đã tạo mô hình dummy tại {destination} để mô phỏng.")
-                return True, True # Tải file thành công (nhưng là dummy)
+                return True, True
             except Exception as dummy_e:
                 logger.error(f"❌ Lỗi nghiêm trọng: Không thể tạo mô hình dummy: {dummy_e}")
-                return False, False # Thất bại toàn bộ
+                return False, False
 
-    # Tải và Load Model Toàn Cục (CHỈ MỘT LẦN)
-    # Logic kiểm tra file trên đĩa để xác định success và is_dummy
-    if not os.path.exists(MODEL_PATH):
-        # Lần đầu chạy, cố gắng tải hoặc tạo dummy
-        success, is_dummy = download_file_from_gdrive(DRIVE_FILE_ID, MODEL_PATH)
-    else:
-        # Nếu file đã tồn tại trên đĩa. Ta phải giả định nó là REAL
-        # Nếu muốn biết nó là dummy thật hay không, cần phải lưu thêm flag file.
-        # Nhưng để đơn giản, ta ưu tiên Real nếu file có sẵn.
-        success, is_dummy = True, False 
+    return False, False
 
-    if not success:
-        logger.error("Dừng ứng dụng do không thể tải/tạo model.")
-        # Không cần raise exception, chỉ cần để MODEL_LOADED = False
-        # để ứng dụng tiếp tục chạy ở chế độ Fixed (đã được handle bên dưới).
-        pass
-
+# ==========================================================
+# TẢI VÀ LOAD MODEL
+# ==========================================================
+try:
+    success, is_dummy = download_file_from_gdrive(DRIVE_FILE_ID, MODEL_PATH)
     if success:
         logger.info(f"⏳ Đang tải model Keras từ: {MODEL_PATH}")
         MODEL = load_model(MODEL_PATH)
         logger.info("🚀 Tải model Keras thành công! Model đã sẵn sàng.")
-        
-        # Cập nhật trạng thái toàn cục
         MODEL_LOADED = True
-        IS_DUMMY_MODE = is_dummy # ✅ CẬP NHẬT TRẠNG THÁI DUMMY TẠI ĐÂY
+        IS_DUMMY_MODE = is_dummy
+    else:
+        logger.error("❌ Không thể tải hoặc tạo model. Chuyển sang FIXED MODE.")
+        MODEL_LOADED = False
+        IS_DUMMY_MODE = True
 
-except ImportError as e:
-    logger.error(f"❌ KHÔNG TÌM THẤY THƯ VIỆN TENSORFLOW/NUMPY/GDOWN: {e}. Chuyển sang FIXED MODE.")
-    MODEL = None
-    MODEL_LOADED = False
-    IS_DUMMY_MODE = True # Dependency error -> FIXED/DUMMY MODE
 except Exception as e:
     logger.error(f"❌ LỖI KHI LOAD MODEL KERAS: {e}. Chuyển sang FIXED MODE.")
     MODEL = None
     MODEL_LOADED = False
-    IS_DUMMY_MODE = True # Loading error -> FIXED/DUMMY MODE
+    IS_DUMMY_MODE = True
 
-# Hàm cần thiết cho Keras
+# ==========================================================
+# HÀM XỬ LÝ ẢNH VÀ DỰ ĐOÁN
+# ==========================================================
 def img_to_array(img):
     """Chuyển ảnh PIL thành mảng numpy."""
     return np.asarray(img)
 
-# Hàm dự đoán thực tế (chỉ chạy khi model đã load)
 def predict_image(img_bytes):
-    # ✅ THÊM LOGIC TRẢ VỀ KẾT QUẢ DUMMY RÕ RÀNG
     if IS_DUMMY_MODE and MODEL_LOADED:
-        # Trả về kết quả cố định để mô phỏng, xác suất ngẫu nhiên
-        prob_val = 0.5 + (np.random.rand() * 0.1 - 0.05) # ~ 45% - 55%
-        if prob_val > 0.5:
-            result = "Nodule (U)"
-            prob = prob_val
-        else:
-            result = "Non-nodule (Không U)"
-            prob = 1.0 - prob_val
-
+        prob_val = 0.5 + (np.random.rand() * 0.1 - 0.05)
+        result = "Nodule (U)" if prob_val > 0.5 else "Non-nodule (Không U)"
+        prob = prob_val if prob_val > 0.5 else 1.0 - prob_val
         return {
-            "result": result, 
-            "probability": float(prob), 
+            "result": result,
+            "probability": float(prob),
             "message": "Model đang chạy chế độ mô phỏng (DUMMY MODE). Kết quả không đáng tin cậy."
         }
-        
+
     if not MODEL_LOADED or MODEL is None:
         return {"result": "LỖI HỆ THỐNG", "probability": 0.0, "message": "Model AI chưa được tải thành công."}
-        
+
     try:
-        # Tiền xử lý ảnh (chỉ chạy khi chắc chắn là REAL model)
         img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
         img = img.resize(MODEL_INPUT_SIZE)
         img_array = img_to_array(img)
-        img_array = np.expand_dims(img_array, axis=0) # Thêm dimension batch
-        
-        # Chuẩn hóa
+        img_array = np.expand_dims(img_array, axis=0)
         img_array /= 255.0
 
-        # Dự đoán
-        # Giả định mô hình là mô hình phân loại nhị phân (sigmoid output)
-        prediction = MODEL.predict(img_array)[0][0] 
-        
-        # Phân loại kết quả
+        prediction = MODEL.predict(img_array)[0][0]
         threshold = 0.5
-        if prediction >= threshold: # Sử dụng >= để tránh kết quả 0.00%
-            result = "Nodule (U)"
-            prob = float(prediction)
-        else:
-            result = "Non-nodule (Không U)"
-            prob = float(1.0 - prediction) # Lấy xác suất của lớp Non-nodule
-            
+        result = "Nodule (U)" if prediction >= threshold else "Non-nodule (Không U)"
+        prob = float(prediction) if prediction >= threshold else float(1.0 - prediction)
+
         return {"result": result, "probability": prob, "message": "Dự đoán thành công bằng REAL KERAS MODEL."}
 
     except Exception as e:
@@ -182,49 +172,33 @@ def predict_image(img_bytes):
         return {"result": "LỖI KỸ THUẬT", "probability": 0.0, "message": f"Lỗi: {e}"}
 
 # ==========================================================
-# END OF AI SECTION
+# FLASK APP CONFIG
 # ==========================================================
-
-# LOGGING ỔN ĐỊNH
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[logging.StreamHandler()]
-)
-logger = logging.getLogger(__name__)
-
 app = Flask(__name__)
 app.secret_key = "emr-fixed-2025-no-crash"
-
-# ✅ GIỚI HẠN SIÊU NHỎ - KHÔNG CRASH
 app.config['MAX_CONTENT_LENGTH'] = 4 * 1024 * 1024  # 4MB MAX
 MAX_FILE_SIZE_MB = 4
-
 ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'bmp'}
 
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
-# ✅ HÀM RESIZE + BASE64 - KHÔNG CRASH
 def safe_image_to_b64(img_bytes, max_size=200):
-    """Chỉ tạo thumbnail 200x200 → ~10KB base64"""
+    """Tạo thumbnail 200x200."""
     try:
         with Image.open(io.BytesIO(img_bytes)) as img:
-            # RESIZE NHỎ → KHÔNG CRASH
             img.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
-            
-            # Tạo buffer mới
             buffer = io.BytesIO()
             img.save(buffer, format='JPEG', quality=85, optimize=True)
             buffer.seek(0)
-            
-            # Base64 nhỏ gọn
-            b64 = base64.b64encode(buffer.getvalue()).decode('utf-8')
-            return b64
+            return base64.b64encode(buffer.getvalue()).decode('utf-8')
     except Exception as e:
         logger.error(f"Error generating thumbnail: {e}")
         return None
 
+# ==========================================================
+# ROUTES
+# ==========================================================
 @app.route("/", methods=["GET"])
 def index():
     return render_template("index.html")
@@ -233,7 +207,6 @@ def index():
 def login():
     username = request.form.get("userID", "").strip()
     password = request.form.get("password", "").strip()
-    
     if username == "user_demo" and password == "Test@123456":
         session['user'] = username
         return redirect(url_for("dashboard"))
@@ -244,21 +217,13 @@ def login():
 def dashboard():
     if 'user' not in session:
         return redirect(url_for("index"))
-        
-    # ✅ LOGIC HIỂN THỊ TRẠNG THÁI CHÍNH XÁC
-    if not MODEL_LOADED and IS_DUMMY_MODE:
-        # Trường hợp lỗi thư viện hoặc lỗi load nghiêm trọng
-        model_status = "❌ LỖI TOÀN BỘ (KHÔNG CÓ MODEL AI)"
-    elif MODEL_LOADED and IS_DUMMY_MODE:
-        # Trường hợp tạo model dummy thành công (sau khi tải GDrive thất bại)
-        model_status = "⚠️ FIXED MODE (ĐANG DÙNG DUMMY MODEL)"
-    elif MODEL_LOADED and not IS_DUMMY_MODE:
-        # Trường hợp tải model thực tế thành công
-        model_status = "✅ REAL KERAS MODEL LOADED"
-    else:
-        # Trường hợp không xác định
-        model_status = "❓ TRẠNG THÁI KHÔNG XÁC ĐỊNH"
-        
+    
+    model_status = (
+        "❌ LỖI TOÀN BỘ (KHÔNG CÓ MODEL AI)" if not MODEL_LOADED and IS_DUMMY_MODE else
+        "⚠️ FIXED MODE (ĐANG DÙNG DUMMY MODEL)" if MODEL_LOADED and IS_DUMMY_MODE else
+        "✅ REAL KERAS MODEL LOADED" if MODEL_LOADED and not IS_DUMMY_MODE else
+        "❓ TRẠNG THÁI KHÔNG XÁC ĐỊNH"
+    )
     return render_template("dashboard.html", model_status=model_status)
 
 @app.route("/emr_profile", methods=["GET", "POST"])
@@ -277,12 +242,9 @@ def emr_profile():
             return render_template('emr_profile.html', summary=None, filename=None)
             
         filename = file.filename
-        
         try:
-            # Đọc file trước khi xử lý (Flask đã giới hạn 4MB)
             file_stream_bytes = file.read()
             file_stream = io.BytesIO(file_stream_bytes)
-            
             if filename.lower().endswith('.csv'):
                 df = pd.read_csv(file_stream)
             elif filename.lower().endswith(('.xls', '.xlsx')):
@@ -293,7 +255,6 @@ def emr_profile():
 
             rows, cols = df.shape
             col_info = []
-            
             for col in df.columns:
                 dtype = str(df[col].dtype)
                 missing = df[col].isnull().sum()
@@ -307,7 +268,6 @@ def emr_profile():
                         f"Mean: {desc.get('mean', 'N/A'):.2f}, "
                         f"Std: {desc.get('std', 'N/A'):.2f}"
                     )
-                
                 col_info.append(f"""
                     <li class="bg-gray-50 p-3 rounded-lg border-l-4 border-primary-green">
                         <strong class="text-gray-800">{col}</strong>
@@ -329,7 +289,6 @@ def emr_profile():
                 </div>
             </div>
             """
-            
             table_html = df.head().to_html(classes="table-auto min-w-full divide-y divide-gray-200", index=False)
             summary = info
             summary += f"<h4 class='text-xl font-semibold mt-8 mb-4 text-gray-700'><i class='fas fa-cogs mr-2 text-primary-green'></i> Phân tích Cấu trúc Cột ({cols} Cột):</h4>"
@@ -353,22 +312,18 @@ def emr_prediction():
 
     if request.method == "POST":
         try:
-            # ✅ VALIDATE FILE
             file = request.files.get('file')
             if not file or not file.filename:
                 flash("❌ Chưa chọn file.", "danger")
                 return render_template('emr_prediction.html')
                 
             filename = file.filename
-            
             if not allowed_file(filename):
                 flash("❌ Chỉ chấp nhận JPG, PNG, GIF, BMP", "danger")
                 return render_template('emr_prediction.html')
 
-            # ✅ SIZE CHECK SIÊU NHANH & ĐỌC BYTES
             img_bytes = file.read()
             file_size = len(img_bytes)
-            
             if file_size > MAX_FILE_SIZE_MB * 1024 * 1024:
                 flash(f"❌ File quá lớn ({file_size//(1024*1024)}MB > 4MB)", "danger")
                 return render_template('emr_prediction.html')
@@ -377,10 +332,12 @@ def emr_prediction():
                 flash("❌ File rỗng.", "danger")
                 return render_template('emr_prediction.html')
 
-            # ✅ CACHE CHECK
+            # Limit cache size to prevent session cookie overflow
             if 'prediction_cache' not in session:
                 session['prediction_cache'] = {}
-                
+            if len(session['prediction_cache']) > 5:  # Limit to 5 cached predictions
+                session['prediction_cache'].pop(next(iter(session['prediction_cache'])))
+            
             if filename in session['prediction_cache']:
                 cached = session['prediction_cache'][filename]
                 prediction_result = cached['prediction']
@@ -388,21 +345,12 @@ def emr_prediction():
                 flash(f"✅ Từ cache: {filename}", "info")
             else:
                 start_time = time.time()
-                
-                # ✅ DỰ ĐOÁN THỰC TẾ BẰNG KERAS MODEL HOẶC DUMMY
                 prediction_result = predict_image(img_bytes)
-                
-                # ✅ ĐỌC FILE + THUMBNAIL - KHÔNG CRASH
                 thumb_b64 = safe_image_to_b64(img_bytes, max_size=200)
-                if thumb_b64:
-                    image_b64 = thumb_b64
-                else:
-                    image_b64 = None # Không hiển thị ảnh nếu lỗi
-                    
+                image_b64 = thumb_b64 if thumb_b64 else None
                 end_time = time.time()
                 logger.info(f"AI Prediction took {end_time - start_time:.2f} seconds.")
 
-                # ✅ CACHE
                 session['prediction_cache'][filename] = {
                     'prediction': prediction_result,
                     'image_b64': image_b64
@@ -431,14 +379,10 @@ def health():
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
-    
-    # ✅ LOGIC HIỂN THỊ LOG CHÍNH XÁC
-    if not MODEL_LOADED:
-        model_status_log = "FATAL ERROR/FIXED MODE (MODEL NOT LOADED)"
-    elif IS_DUMMY_MODE:
-        model_status_log = "DUMMY MODE (FAKE MODEL LOADED)"
-    else:
-        model_status_log = "REAL KERAS LOADED"
-        
+    model_status_log = (
+        "FATAL ERROR/FIXED MODE (MODEL NOT LOADED)" if not MODEL_LOADED else
+        "DUMMY MODE (FAKE MODEL LOADED)" if IS_DUMMY_MODE else
+        "REAL KERAS LOADED"
+    )
     logger.info(f"🚀 EMR AI - MODE: {model_status_log}")
     app.run(host="0.0.0.0", port=port, debug=False, threaded=True)
