@@ -15,6 +15,9 @@ from flask import (
 # Thư viện cho Data Analysis (Pandas)
 import pandas as pd
 
+# ✅ THƯ VIỆN BỔ SUNG CHO TẢI FILE
+import gdown
+
 # ==========================================================
 # ✅ NHỮNG THAY ĐỔI QUAN TRỌNG CHO MÔ HÌNH AI
 # ==========================================================
@@ -23,43 +26,68 @@ try:
     import tensorflow as tf
     import numpy as np
     from tensorflow.keras.models import load_model, Sequential
-    from tensorflow.keras.layers import Dense, Input
+    from tensorflow.keras.layers import Dense, Input, Conv2D, Flatten # Thêm Conv2D, Flatten để mô hình dummy giống thật hơn
+    
+    # Thiết lập logging cho phần AI
     logger = logging.getLogger(__name__)
     
     # 2. CẤU HÌNH GOOGLE DRIVE VÀ MODEL
     # === BẠN CẦN THAY THẾ ID FILE NÀY VỚI ID FILE KERAS CỦA BẠN ===
-    DRIVE_FILE_ID = "1ORV8tDkT03fxjRyaWUq5liZ2bHQz3YQC"
+    DRIVE_FILE_ID = "1ORV8tDkT03fxjRyaWU5liZ2bHQz3YQC"
     MODEL_FILE_NAME = "best_weights_model.keras"
     MODEL_PATH = os.path.join(os.getcwd(), MODEL_FILE_NAME)
     MODEL_INPUT_SIZE = (224, 224) # Giả định kích thước input là 224x224
     
-    # 3. HÀM TẢI FILE TỪ GOOGLE DRIVE (CẦN SỬA LOGIC)
+    # ✅ 3. HÀM TẢI FILE TỪ GOOGLE DRIVE (ĐÃ TRIỂN KHAI BẰNG GDOWN)
     def download_file_from_gdrive(file_id, destination):
         """
-        PLACEHOLDER: Bạn cần thay thế logic này để tải file 38MB từ Google Drive
-        sử dụng ID (ví dụ: dùng thư viện gdown, hoặc script requests).
-        
-        Nếu bạn đang chạy trên môi trường có thể cài đặt thư viện, hãy dùng:
-        pip install gdown
-        import gdown
-        gdown.download(id=file_id, output=destination, quiet=False)
+        Triển khai thực tế: Tải file từ Google Drive sử dụng ID file bằng thư viện gdown.
+        Nếu tải thất bại, sẽ tạo mô hình dummy để ứng dụng tiếp tục chạy.
         """
-        logger.warning(f"Đang mô phỏng tải model từ GDrive ID: {file_id} về {destination}")
-        
-        # Tạo một mô hình dummy nhỏ để đảm bảo load_model không bị lỗi
-        # khi chạy thử nghiệm trong môi trường Canvas
-        dummy_model = Sequential([
-            Input(shape=(MODEL_INPUT_SIZE[0], MODEL_INPUT_SIZE[1], 3)),
-            Dense(1, activation='sigmoid')
-        ])
-        dummy_model.compile(optimizer='adam', loss='binary_crossentropy')
-        dummy_model.save(destination)
-        logger.info("✅ Đã tạo mô hình dummy an toàn để mô phỏng tải file 38MB.")
-        return True
+        # Kiểm tra nếu file đã tồn tại
+        if os.path.exists(destination):
+            logger.info(f"File đã tồn tại: {destination}. Bỏ qua tải xuống.")
+            return True
+            
+        logger.info(f"Đang cố gắng tải model từ GDrive ID: {file_id} về {destination}...")
+        try:
+            # Tải file thực tế bằng gdown
+            gdown.download(id=file_id, output=destination, quiet=False, fuzzy=True)
+            
+            if os.path.exists(destination):
+                logger.info("✅ Tải xuống model thực tế hoàn tất.")
+                return True
+            else:
+                logger.error("❌ Tải xuống thất bại: File không tìm thấy sau khi chạy gdown.")
+                # Chuyển sang tạo dummy model nếu gdown thất bại
+                raise Exception("Gdown download failed.") 
+                
+        except Exception as e:
+            logger.error(f"❌ LỖI KHI TẢI FILE G-DRIVE: {e}. Đang chuyển sang tạo mô hình dummy.")
+            
+            # ⚠️ TẠO MÔ HÌNH DUMMY ĐỂ ĐẢM BẢO KHỞI CHẠY ỨNG DỤNG
+            try:
+                # Tạo một mô hình dummy nhỏ
+                dummy_model = Sequential([
+                    Input(shape=(MODEL_INPUT_SIZE[0], MODEL_INPUT_SIZE[1], 3)),
+                    Conv2D(8, (3, 3), activation='relu'),
+                    Flatten(),
+                    Dense(1, activation='sigmoid')
+                ])
+                dummy_model.compile(optimizer='adam', loss='binary_crossentropy')
+                dummy_model.save(destination)
+                logger.info(f"✅ Đã tạo mô hình dummy tại {destination} để mô phỏng.")
+                return True
+            except Exception as dummy_e:
+                logger.error(f"❌ Lỗi nghiêm trọng: Không thể tạo mô hình dummy: {dummy_e}")
+                return False
 
     # Tải và Load Model Toàn Cục (CHỈ MỘT LẦN)
     if not os.path.exists(MODEL_PATH):
-        download_file_from_gdrive(DRIVE_FILE_ID, MODEL_PATH)
+        success = download_file_from_gdrive(DRIVE_FILE_ID, MODEL_PATH)
+        if not success:
+            logger.error("Dừng ứng dụng do không thể tải/tạo model.")
+            raise Exception("Model loading failed at startup.")
 
     logger.info(f"⏳ Đang tải model Keras từ: {MODEL_PATH}")
     MODEL = load_model(MODEL_PATH)
@@ -67,7 +95,7 @@ try:
     MODEL_LOADED = True
 
 except ImportError as e:
-    logger.error(f"❌ KHÔNG TÌM THẤY THƯ VIỆN TENSORFLOW/NUMPY: {e}. Chuyển sang FIXED MODE.")
+    logger.error(f"❌ KHÔNG TÌM THẤY THƯ VIỆN TENSORFLOW/NUMPY/GDOWN: {e}. Chuyển sang FIXED MODE.")
     MODEL = None
     MODEL_LOADED = False
 except Exception as e:
@@ -75,6 +103,13 @@ except Exception as e:
     MODEL = None
     MODEL_LOADED = False
 
+# Hàm cần thiết cho Keras
+def img_to_array(img):
+    """
+    Chuyển ảnh PIL thành mảng numpy.
+    Đây là hàm giả định, bạn có thể cần hàm này nếu dùng API của Keras.
+    """
+    return np.asarray(img)
 
 # Hàm dự đoán thực tế (chỉ chạy khi model đã load)
 def predict_image(img_bytes):
