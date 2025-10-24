@@ -1,0 +1,128 @@
+{% macro nav_bar(current_page) %}
+<nav class="w-full bg-primary-green shadow-lg">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex justify-between items-center py-3">
+        <div class="text-xl font-bold text-white">EMR Insight AI</div>
+        <div class="flex space-x-6">
+            <a href="{{ url_for('dashboard') }}" class="text-white hover:text-green-200 transition duration-150 py-1 border-b-2 
+               {% if current_page == 'dashboard' %}border-white font-bold{% else %}border-transparent{% endif %}">
+                <i class="fas fa-home mr-1"></i> Dashboard
+            </a>
+            <a href="{{ url_for('emr_profile') }}" class="text-white hover:text-green-200 transition duration-150 py-1 border-b-2
+               {% if current_page == 'profile' %}border-white font-bold{% else %}border-transparent{% endif %}">
+                <i class="fas fa-file-upload mr-1"></i> Phân tích Dữ liệu
+            </a>
+            <a href="{{ url_for('emr_prediction') }}" class="text-white hover:text-green-200 transition duration-150 py-1 border-b-2
+               {% if current_page == 'prediction' %}border-white font-bold{% else %}border-transparent{% endif %}">
+                <i class="fas fa-microscope mr-1"></i> Dự đoán Hình ảnh
+            </a>
+        </div>
+        <div class="flex items-center">
+            <span class="text-white text-sm mr-4 hidden sm:inline">Xin chào, <strong>{{ session['user'] }}</strong></span>
+            <a href="{{ url_for('logout') }}" class="py-1 px-3 bg-white text-primary-green rounded-full hover:bg-gray-200 transition duration-150 font-semibold text-sm">
+                <i class="fas fa-sign-out-alt mr-1"></i> Đăng xuất
+            </a>
+        </div>
+    </div>
+</nav>
+{% endmacro %}
+
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dashboard - EMR Insight AI</title>
+    <!-- Load Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Load Font Awesome for Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.3/css/all.min.css">
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@100..900&display=swap');
+        /* Custom Green Theme */
+        :root {
+            --primary-green: #2e7d32; 
+            --light-green-bg: #e8f5e9; 
+        }
+        .bg-primary-green { background-color: var(--primary-green); }
+        .text-primary-green { color: var(--primary-green); }
+        .border-primary-green { border-color: var(--primary-green); }
+        .hover\:bg-primary-dark-green:hover { background-color: #1b5e20; }
+        
+        body {
+            background-color: var(--light-green-bg);
+            font-family: 'Inter', sans-serif;
+            display: flex; /* Dùng flex để dễ dàng đẩy footer xuống cuối */
+            flex-direction: column;
+            min-height: 100vh;
+        }
+        main {
+            flex-grow: 1; /* Cho phép main chiếm hết không gian còn lại */
+        }
+    </style>
+</head>
+<body>
+
+    <!-- THÊM: Header chứa Logo (Giống index.html) -->
+    <header class="w-full bg-white shadow-md p-4 flex justify-center items-center h-24">
+        <div class="logo-container">
+            <img src="static/Logo_Marie_Curie.png" alt="Logo Marie Curie"
+                 class="max-h-20 w-auto object-contain"
+                 onerror="this.onerror=null; this.src='https://placehold.co/180x80/2e7d32/ffffff?text=EMR+AI+LOGO'">
+        </div>
+    </header>
+
+    {{ nav_bar('dashboard') }}
+
+    <main class="max-w-7xl mx-auto p-4 sm:p-6 lg:p-8 mt-10">
+        <h1 class="text-4xl font-extrabold text-gray-800 mb-8 border-b-4 border-primary-green pb-3">
+            <i class="fas fa-tachometer-alt text-primary-green mr-3"></i> Dashboard Hệ thống EMR AI
+        </h1>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
+            <!-- Card 1: EMR Profile -->
+            <div class="bg-white rounded-xl shadow-xl hover:shadow-2xl transition duration-300 border-t-8 border-green-500">
+                <div class="p-6">
+                    <i class="fas fa-chart-line text-5xl text-green-600 mb-4"></i>
+                    <h2 class="text-2xl font-bold text-gray-700 mb-3">Phân tích Dữ liệu EMR (CSV/Excel)</h2>
+                    <p class="text-gray-500 mb-4">Tải lên các file dữ liệu bệnh án để nhận báo cáo thống kê chuyên nghiệp và chi tiết về cấu trúc, chất lượng và phân tích mô tả.</p>
+                    <a href="{{ url_for('emr_profile') }}"
+                       class="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-full shadow-sm text-white bg-primary-green hover:bg-primary-dark-green transition duration-150">
+                        <i class="fas fa-file-upload mr-2"></i> Bắt đầu Phân tích
+                    </a>
+                </div>
+            </div>
+
+            <!-- Card 2: Image Prediction -->
+            <div class="bg-white rounded-xl shadow-xl hover:shadow-2xl transition duration-300 border-t-8 border-green-500">
+                <div class="p-6">
+                    <i class="fas fa-brain text-5xl text-green-600 mb-4"></i>
+                    <h2 class="text-2xl font-bold text-gray-700 mb-3">Dự đoán Bệnh lý Hình ảnh (AI)</h2>
+                    <p class="text-gray-500 mb-4">Sử dụng mô hình AI (CNN/LSTM) để dự đoán sự tồn tại của Nodule (khối u/hạch) trên các ảnh X-Ray/MRI/CT.</p>
+                    <a href="{{ url_for('emr_prediction') }}"
+                       class="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-full shadow-sm text-white bg-primary-green hover:bg-primary-dark-green transition duration-150">
+                        <i class="fas fa-microscope mr-2"></i> Thực hiện Dự đoán
+                    </a>
+                </div>
+            </div>
+
+            <!-- Card 3: System Status -->
+            <div class="bg-white rounded-xl shadow-xl hover:shadow-2xl transition duration-300 border-t-8 border-green-500">
+                <div class="p-6">
+                    <i class="fas fa-server text-5xl text-green-600 mb-4"></i>
+                    <h2 class="text-2xl font-bold text-gray-700 mb-3">Trạng thái Hệ thống</h2>
+                    <p class="text-gray-500 mb-4">Tình trạng kết nối và mô hình AI đã sẵn sàng dự đoán ảnh y tế.</p>
+                    
+                </div>
+            </div>
+        </div>
+    </main>
+    
+    <!-- THÊM: Footer chứa thông tin liên hệ -->
+    <footer class="mt-10 p-4 bg-white text-gray-500 text-xs text-center border-t border-gray-200 shadow-inner">
+        <p><strong>Liên hệ:</strong> Công ty TNHH MTV Minh Trí và những người bạn Marie Curie<br>
+        159 Nam Kỳ Khởi Nghĩa, Phường Xuân Hòa, Tp. Hồ Chí Minh<br>
+        Lại Nguyễn Minh Trí - <a href="mailto:laingminhtri@gmail.com" class="text-primary-green hover:text-green-800">laingminhtri@gmail.com</a></p>
+    </footer>
+
+</body>
+</html>
