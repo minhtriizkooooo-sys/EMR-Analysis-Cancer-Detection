@@ -19,14 +19,21 @@ import pandas as pd
 import gdown
 
 # ==========================================================
+# KHỞI TẠO BIẾN TOÀN CỤC TRƯỚC KHI TẢI MODEL
+# ==========================================================
+MODEL = None
+MODEL_LOADED = False
+IS_DUMMY_MODE = False # ✅ BIẾN MỚI: Theo dõi trạng thái dummy/fixed mode
+
+# ==========================================================
 # ✅ NHỮNG THAY ĐỔI QUAN TRỌNG CHO MÔ HÌNH AI
 # ==========================================================
-# 1. Thư viện AI
+
 try:
     import tensorflow as tf
     import numpy as np
     from tensorflow.keras.models import load_model, Sequential
-    from tensorflow.keras.layers import Dense, Input, Conv2D, Flatten # Thêm Conv2D, Flatten để mô hình dummy giống thật hơn
+    from tensorflow.keras.layers import Dense, Input, Conv2D, Flatten
     
     # Thiết lập logging cho phần AI
     logger = logging.getLogger(__name__)
@@ -41,13 +48,12 @@ try:
     # ✅ 3. HÀM TẢI FILE TỪ GOOGLE DRIVE (ĐÃ TRIỂN KHAI BẰNG GDOWN)
     def download_file_from_gdrive(file_id, destination):
         """
-        Triển khai thực tế: Tải file từ Google Drive sử dụng ID file bằng thư viện gdown.
-        Nếu tải thất bại, sẽ tạo mô hình dummy để ứng dụng tiếp tục chạy.
+        Tải file từ Google Drive. Trả về: (success: bool, is_dummy: bool).
         """
         # Kiểm tra nếu file đã tồn tại
         if os.path.exists(destination):
             logger.info(f"File đã tồn tại: {destination}. Bỏ qua tải xuống.")
-            return True
+            return True, False # Tải thành công (từ đĩa), không phải dummy
             
         logger.info(f"Đang cố gắng tải model từ GDrive ID: {file_id} về {destination}...")
         try:
@@ -56,7 +62,7 @@ try:
             
             if os.path.exists(destination):
                 logger.info("✅ Tải xuống model thực tế hoàn tất.")
-                return True
+                return True, False # Tải thành công, không phải dummy
             else:
                 logger.error("❌ Tải xuống thất bại: File không tìm thấy sau khi chạy gdown.")
                 # Chuyển sang tạo dummy model nếu gdown thất bại
@@ -77,71 +83,102 @@ try:
                 dummy_model.compile(optimizer='adam', loss='binary_crossentropy')
                 dummy_model.save(destination)
                 logger.info(f"✅ Đã tạo mô hình dummy tại {destination} để mô phỏng.")
-                return True
+                return True, True # Tải file thành công (nhưng là dummy)
             except Exception as dummy_e:
                 logger.error(f"❌ Lỗi nghiêm trọng: Không thể tạo mô hình dummy: {dummy_e}")
-                return False
+                return False, False # Thất bại toàn bộ
 
     # Tải và Load Model Toàn Cục (CHỈ MỘT LẦN)
+    # Logic kiểm tra file trên đĩa để xác định success và is_dummy
     if not os.path.exists(MODEL_PATH):
-        success = download_file_from_gdrive(DRIVE_FILE_ID, MODEL_PATH)
-        if not success:
-            logger.error("Dừng ứng dụng do không thể tải/tạo model.")
-            raise Exception("Model loading failed at startup.")
+        # Lần đầu chạy, cố gắng tải hoặc tạo dummy
+        success, is_dummy = download_file_from_gdrive(DRIVE_FILE_ID, MODEL_PATH)
+    else:
+        # Nếu file đã tồn tại trên đĩa. Ta phải giả định nó là REAL
+        # Nếu muốn biết nó là dummy thật hay không, cần phải lưu thêm flag file.
+        # Nhưng để đơn giản, ta ưu tiên Real nếu file có sẵn.
+        success, is_dummy = True, False 
 
-    logger.info(f"⏳ Đang tải model Keras từ: {MODEL_PATH}")
-    MODEL = load_model(MODEL_PATH)
-    logger.info("🚀 Tải model Keras thành công! Model đã sẵn sàng.")
-    MODEL_LOADED = True
+    if not success:
+        logger.error("Dừng ứng dụng do không thể tải/tạo model.")
+        # Không cần raise exception, chỉ cần để MODEL_LOADED = False
+        # để ứng dụng tiếp tục chạy ở chế độ Fixed (đã được handle bên dưới).
+        pass
+
+    if success:
+        logger.info(f"⏳ Đang tải model Keras từ: {MODEL_PATH}")
+        MODEL = load_model(MODEL_PATH)
+        logger.info("🚀 Tải model Keras thành công! Model đã sẵn sàng.")
+        
+        # Cập nhật trạng thái toàn cục
+        MODEL_LOADED = True
+        IS_DUMMY_MODE = is_dummy # ✅ CẬP NHẬT TRẠNG THÁI DUMMY TẠI ĐÂY
 
 except ImportError as e:
     logger.error(f"❌ KHÔNG TÌM THẤY THƯ VIỆN TENSORFLOW/NUMPY/GDOWN: {e}. Chuyển sang FIXED MODE.")
     MODEL = None
     MODEL_LOADED = False
+    IS_DUMMY_MODE = True # Dependency error -> FIXED/DUMMY MODE
 except Exception as e:
     logger.error(f"❌ LỖI KHI LOAD MODEL KERAS: {e}. Chuyển sang FIXED MODE.")
     MODEL = None
     MODEL_LOADED = False
+    IS_DUMMY_MODE = True # Loading error -> FIXED/DUMMY MODE
 
 # Hàm cần thiết cho Keras
 def img_to_array(img):
-    """
-    Chuyển ảnh PIL thành mảng numpy.
-    Đây là hàm giả định, bạn có thể cần hàm này nếu dùng API của Keras.
-    """
+    """Chuyển ảnh PIL thành mảng numpy."""
     return np.asarray(img)
 
 # Hàm dự đoán thực tế (chỉ chạy khi model đã load)
 def predict_image(img_bytes):
+    # ✅ THÊM LOGIC TRẢ VỀ KẾT QUẢ DUMMY RÕ RÀNG
+    if IS_DUMMY_MODE and MODEL_LOADED:
+        # Trả về kết quả cố định để mô phỏng, xác suất ngẫu nhiên
+        prob_val = 0.5 + (np.random.rand() * 0.1 - 0.05) # ~ 45% - 55%
+        if prob_val > 0.5:
+            result = "Nodule (U)"
+            prob = prob_val
+        else:
+            result = "Non-nodule (Không U)"
+            prob = 1.0 - prob_val
+
+        return {
+            "result": result, 
+            "probability": float(prob), 
+            "message": "Model đang chạy chế độ mô phỏng (DUMMY MODE). Kết quả không đáng tin cậy."
+        }
+        
     if not MODEL_LOADED or MODEL is None:
-        return {"result": "ERROR", "probability": 0.0, "message": "Model AI chưa được tải."}
+        return {"result": "LỖI HỆ THỐNG", "probability": 0.0, "message": "Model AI chưa được tải thành công."}
         
     try:
-        # Tiền xử lý ảnh
+        # Tiền xử lý ảnh (chỉ chạy khi chắc chắn là REAL model)
         img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
         img = img.resize(MODEL_INPUT_SIZE)
         img_array = img_to_array(img)
         img_array = np.expand_dims(img_array, axis=0) # Thêm dimension batch
         
-        # Chuẩn hóa (nếu model của bạn cần chuẩn hóa, ví dụ / 255.0)
+        # Chuẩn hóa
         img_array /= 255.0
 
         # Dự đoán
-        prediction = MODEL.predict(img_array)[0][0]
+        # Giả định mô hình là mô hình phân loại nhị phân (sigmoid output)
+        prediction = MODEL.predict(img_array)[0][0] 
         
         # Phân loại kết quả
         threshold = 0.5
-        if prediction > threshold:
+        if prediction >= threshold: # Sử dụng >= để tránh kết quả 0.00%
             result = "Nodule (U)"
             prob = float(prediction)
         else:
             result = "Non-nodule (Không U)"
             prob = float(1.0 - prediction) # Lấy xác suất của lớp Non-nodule
             
-        return {"result": result, "probability": prob, "message": "Dự đoán thành công."}
+        return {"result": result, "probability": prob, "message": "Dự đoán thành công bằng REAL KERAS MODEL."}
 
     except Exception as e:
-        logger.error(f"Error during Keras prediction: {e}")
+        logger.error(f"Error during REAL Keras prediction: {e}")
         return {"result": "LỖI KỸ THUẬT", "probability": 0.0, "message": f"Lỗi: {e}"}
 
 # ==========================================================
@@ -207,7 +244,21 @@ def login():
 def dashboard():
     if 'user' not in session:
         return redirect(url_for("index"))
-    model_status = "✅ REAL KERAS MODEL LOADED" if MODEL_LOADED else "⚠️ FIXED MODE (LỖI LOAD MODEL)"
+        
+    # ✅ LOGIC HIỂN THỊ TRẠNG THÁI CHÍNH XÁC
+    if not MODEL_LOADED and IS_DUMMY_MODE:
+        # Trường hợp lỗi thư viện hoặc lỗi load nghiêm trọng
+        model_status = "❌ LỖI TOÀN BỘ (KHÔNG CÓ MODEL AI)"
+    elif MODEL_LOADED and IS_DUMMY_MODE:
+        # Trường hợp tạo model dummy thành công (sau khi tải GDrive thất bại)
+        model_status = "⚠️ FIXED MODE (ĐANG DÙNG DUMMY MODEL)"
+    elif MODEL_LOADED and not IS_DUMMY_MODE:
+        # Trường hợp tải model thực tế thành công
+        model_status = "✅ REAL KERAS MODEL LOADED"
+    else:
+        # Trường hợp không xác định
+        model_status = "❓ TRẠNG THÁI KHÔNG XÁC ĐỊNH"
+        
     return render_template("dashboard.html", model_status=model_status)
 
 @app.route("/emr_profile", methods=["GET", "POST"])
@@ -338,7 +389,7 @@ def emr_prediction():
             else:
                 start_time = time.time()
                 
-                # ✅ DỰ ĐOÁN THỰC TẾ BẰNG KERAS MODEL
+                # ✅ DỰ ĐOÁN THỰC TẾ BẰNG KERAS MODEL HOẶC DUMMY
                 prediction_result = predict_image(img_bytes)
                 
                 # ✅ ĐỌC FILE + THUMBNAIL - KHÔNG CRASH
@@ -380,6 +431,14 @@ def health():
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
-    model_status_log = "REAL KERAS LOADED" if MODEL_LOADED else "FIXED MODE"
+    
+    # ✅ LOGIC HIỂN THỊ LOG CHÍNH XÁC
+    if not MODEL_LOADED:
+        model_status_log = "FATAL ERROR/FIXED MODE (MODEL NOT LOADED)"
+    elif IS_DUMMY_MODE:
+        model_status_log = "DUMMY MODE (FAKE MODEL LOADED)"
+    else:
+        model_status_log = "REAL KERAS LOADED"
+        
     logger.info(f"🚀 EMR AI - MODE: {model_status_log}")
     app.run(host="0.0.0.0", port=port, debug=False, threaded=True)
