@@ -43,6 +43,11 @@ HF_MODEL_FILE = "best_weights_model.keras"
 # LẤY HF TOKEN TỪ BIẾN MÔI TRƯỜNG
 HF_TOKEN = os.environ.get("HF_TOKEN") 
 
+# KHAI BÁO SỐ LƯỢNG CLASSES CHÍNH XÁC: 128
+NUM_CLASSES = 128 
+CLASSES = [f"Lớp Bệnh #{i+1}" for i in range(NUM_CLASSES)]
+
+
 model = None
 try:
     print("⏳ Tải model từ Hugging Face...")
@@ -55,8 +60,8 @@ try:
         token=HF_TOKEN 
     )
     
-    # BƯỚC 2: Xây dựng lại kiến trúc model (Architecture) - ĐÃ SỬA LỖI MỚI
-    # Cấu hình phải khớp chính xác: EfficientNetB0 -> GlobalPooling -> Dense(1024) -> Dense(512) -> Dense(4)
+    # BƯỚC 2: Xây dựng lại kiến trúc model (Architecture) - ĐÃ SỬA LỖI LỚP OUTPUT
+    # Kiến trúc chính xác: EfficientNetB0 -> GlobalPooling -> Dense(1024) -> Dense(512) -> Dense(128)
     
     # Khởi tạo EfficientNetB0
     base_model = EfficientNetB0(
@@ -69,14 +74,14 @@ try:
     x = base_model.output
     x = GlobalAveragePooling2D()(x)
     
-    # Lớp ẩn 1: 1024 units (đã sửa lần trước)
+    # Lớp ẩn 1: 1024 units
     x = Dense(1024, activation='relu')(x) 
     
-    # Lớp ẩn 2: 512 units (Sửa lỗi dựa trên log mismatch mới nhất)
+    # Lớp ẩn 2: 512 units
     x = Dense(512, activation='relu')(x)
     
-    # Lớp đầu ra: 4 classes (Giả định)
-    output_layer = Dense(4, activation='softmax')(x) 
+    # Lớp đầu ra: 128 classes (ĐÃ SỬA LỖI CỰC KỲ QUAN TRỌNG)
+    output_layer = Dense(NUM_CLASSES, activation='softmax')(x) 
 
     # Xây dựng model hoàn chỉnh
     model = Model(inputs=base_model.input, outputs=output_layer)
@@ -171,7 +176,7 @@ def emr_profile():
     return render_template("emr_profile.html", filename=filename, summary=summary)
 
 # =============================
-# EMR Image Prediction (Giữ nguyên)
+# EMR Image Prediction
 # =============================
 @app.route("/emr_prediction", methods=["GET", "POST"])
 def emr_prediction():
@@ -191,7 +196,7 @@ def emr_prediction():
 
             try:
                 # TIỀN XỬ LÝ ẢNH
-                # Model yêu cầu (224, 224, 3) do cách lưu, nên ta phải tạo ảnh giả-RGB từ Grayscale.
+                # Tạo ảnh giả-RGB từ Grayscale
                 img = Image.open(file_path).convert("L")  # Grayscale (1 kênh)
                 img = img.resize((224, 224)) 
                 x = np.array(img)/255.0
@@ -200,10 +205,8 @@ def emr_prediction():
                 x = np.stack([x, x, x], axis=-1) 
 
                 # Thêm batch size (axis=0)
-                # Hình dạng đầu vào: (1, 224, 224, 3)
                 x = np.expand_dims(x, axis=0) 
 
-                # KIỂM TRA ĐẦU VÀO ĐỂ DEBUG
                 print(f"Input shape cho model (Fake RGB): {x.shape}")
                 
                 pred = model.predict(x)
@@ -211,16 +214,28 @@ def emr_prediction():
                 # Chuyển kết quả dự đoán thành chuỗi
                 prediction_value = np.argmax(pred[0])
                 
-                # Định nghĩa các lớp dự đoán (Giả định 4 lớp)
-                CLASSES = ["Lành Tính (Benign)", "Ác Tính (Malignant)", "Bình Thường (Normal)", "Khác (Other)"]
+                # Định nghĩa các lớp dự đoán (Sử dụng 128 lớp placeholder)
+                # Dùng list CLASSES đã được định nghĩa ở trên
                 
                 # Đảm bảo prediction_value không vượt quá số lớp
-                if prediction_value < len(CLASSES):
+                if prediction_value < NUM_CLASSES:
                     predicted_class = CLASSES[prediction_value]
                 else:
-                    predicted_class = f"Lớp {prediction_value} (Không xác định)"
+                    # Trường hợp này không nên xảy ra vì model chỉ output tối đa NUM_CLASSES
+                    predicted_class = f"Lớp {prediction_value + 1} (Không xác định)"
                 
-                prediction = f"Kết quả dự đoán: {predicted_class} | Probabilities: {pred[0].tolist()}" 
+                
+                # Lấy 5 kết quả dự đoán có xác suất cao nhất (Top 5)
+                top_5_indices = np.argsort(pred[0])[-5:][::-1]
+                top_5_probs = pred[0][top_5_indices]
+                
+                top_5_results = []
+                for i in range(5):
+                    class_name = CLASSES[top_5_indices[i]]
+                    probability = top_5_probs[i] * 100
+                    top_5_results.append(f"{class_name}: {probability:.2f}%")
+                
+                prediction = f"Kết quả dự đoán cao nhất: {predicted_class} ({top_5_probs[0]*100:.2f}%) | Top 5: {', '.join(top_5_results)}"
                 
             except Exception as e:
                 flash(f"Lỗi khi dự đoán: {e}", "danger")
@@ -233,6 +248,5 @@ def emr_prediction():
 # Chạy Flask (Giữ nguyên)
 # =============================
 if __name__ == "__main__":
-    # CHÚ Ý: Cần tăng timeout Gunicorn trên Render!
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port, debug=True)
