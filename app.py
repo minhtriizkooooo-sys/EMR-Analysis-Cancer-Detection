@@ -5,12 +5,12 @@ from flask import Flask, render_template, request, redirect, url_for, session
 from werkzeug.utils import secure_filename
 from PIL import Image
 import tensorflow as tf
-from tensorflow.keras.models import load_model
-from tensorflow.keras.applications import EfficientNetB0
-from tensorflow.keras.layers import Dense, GlobalAveragePooling2D
 from tensorflow.keras.models import Model
+from tensorflow.keras.layers import Dense, GlobalAveragePooling2D
+from tensorflow.keras.applications import EfficientNetB0
 from tensorflow.keras.optimizers import Adam
 from huggingface_hub import hf_hub_download
+import threading
 
 # ==============================
 # Cấu hình Flask
@@ -27,44 +27,48 @@ os.makedirs(MODEL_CACHE, exist_ok=True)
 # ==============================
 HF_MODEL_REPO = "minhtriizkooooo/EMR-Analysis-Cancer_Detection"
 HF_MODEL_FILE = "best_weights_model.keras"
-HF_TOKEN = os.environ.get("HF_TOKEN")
+HF_TOKEN = os.environ.get("HF_TOKEN")  # đã có HF token thật
 NUM_CLASSES = 1  # nhị phân
 model = None
+model_lock = threading.Lock()
 
 def load_model_once():
     global model
-    if model is not None:
-        return model
-    try:
-        print("⏳ Tải model từ Hugging Face...")
-        LOCAL_MODEL_PATH = hf_hub_download(
-            repo_id=HF_MODEL_REPO,
-            filename=HF_MODEL_FILE,
-            cache_dir=MODEL_CACHE,
-            token=HF_TOKEN
-        )
+    with model_lock:
+        if model is not None:
+            return model
+        try:
+            print("⏳ Tải model từ Hugging Face...")
+            LOCAL_MODEL_PATH = hf_hub_download(
+                repo_id=HF_MODEL_REPO,
+                filename=HF_MODEL_FILE,
+                cache_dir=MODEL_CACHE,
+                token=HF_TOKEN
+            )
 
-        # Build EfficientNetB0 nhị phân
-        base_model = EfficientNetB0(
-            input_shape=(224, 224, 3),
-            include_top=False,
-            weights=None
-        )
-        x = base_model.output
-        x = GlobalAveragePooling2D()(x)
-        x = Dense(1024, activation='relu')(x)
-        x = Dense(512, activation='relu')(x)
-        output_layer = Dense(1, activation='sigmoid')(x)  # nhị phân
+            # Build EfficientNetB0 nhị phân
+            base_model = EfficientNetB0(
+                input_shape=(224, 224, 3),
+                include_top=False,
+                weights=None
+            )
+            x = base_model.output
+            x = GlobalAveragePooling2D()(x)
+            x = Dense(1024, activation='relu')(x)
+            x = Dense(512, activation='relu')(x)
+            output_layer = Dense(1, activation='sigmoid')(x)
+            model_local = Model(inputs=base_model.input, outputs=output_layer)
 
-        model = Model(inputs=base_model.input, outputs=output_layer)
-        model.load_weights(LOCAL_MODEL_PATH, skip_mismatch=True)
-        model.compile(optimizer=Adam(1e-4), loss='binary_crossentropy', metrics=['accuracy'])
-        print("✅ Model nhị phân đã load thành công")
-        return model
-    except Exception as e:
-        print(f"❌ Lỗi load model: {e}")
-        model = None
-        return None
+            model_local.load_weights(LOCAL_MODEL_PATH, skip_mismatch=True)
+            model_local.compile(optimizer=Adam(1e-4), loss='binary_crossentropy', metrics=['accuracy'])
+
+            model = model_local
+            print("✅ Model nhị phân đã load thành công")
+            return model
+        except Exception as e:
+            print(f"❌ Lỗi load model: {e}")
+            model = None
+            return None
 
 # ==============================
 # Dummy user
@@ -110,16 +114,14 @@ def emr_profile():
             file_path = os.path.join(UPLOAD_FOLDER, filename)
             file.save(file_path)
             try:
+                import pandas as pd
                 if filename.lower().endswith(".csv"):
-                    import pandas as pd
-                    df = pd.read_csv(file_path)
+                    df = pd.read_csv(file_path, encoding='utf-8', engine='python')
                 elif filename.lower().endswith((".xlsx", ".xls")):
-                    import pandas as pd
                     df = pd.read_excel(file_path)
                 else:
                     summary = "Định dạng file không được hỗ trợ."
                     return render_template("emr_profile.html", filename=filename, summary=summary)
-                # Phân tích chuyên nghiệp hơn: mô tả cơ bản
                 summary = df.describe().to_html(classes="table-auto w-full")
             except Exception as e:
                 summary = f"Lỗi khi đọc file: {e}"
@@ -144,18 +146,18 @@ def emr_prediction():
                 try:
                     img = Image.open(file_path).convert("RGB")
                     img = img.resize((224, 224))
-                    x = np.array(img)/255.0
+                    x = np.array(img, dtype=np.float32)/255.0
                     x = np.expand_dims(x, axis=0)
 
-                    pred = mdl.predict(x)[0][0]  # nhị phân
+                    pred = mdl.predict(x, verbose=0)[0][0]
                     if pred >= 0.5:
                         result = "Nodule"
-                        probability = pred
+                        probability = float(pred)
                     else:
                         result = "Non-nodule"
-                        probability = 1 - pred
+                        probability = float(1 - pred)
 
-                    prediction_result = {"result": result, "probability": probability}
+                    prediction_result = {"result": result, "probability": round(probability, 4)}
 
                 except Exception as e:
                     prediction_result = {"result": f"Lỗi khi dự đoán: {e}", "probability": 0}
