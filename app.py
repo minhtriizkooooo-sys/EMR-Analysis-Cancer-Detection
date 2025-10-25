@@ -13,8 +13,6 @@ from tensorflow.keras.models import load_model
 
 # ĐỊNH NGHĨA CUSTOM OBJECTS MỚI (FIX LỖI)
 # EfficientNet B0 sử dụng hàm kích hoạt Swish (hay còn gọi là SiLU).
-# Khi tải model, Keras đôi khi không nhận diện được hàm này một cách chính xác
-# và dẫn đến việc xây dựng lại cấu trúc mạng sai (lỗi 1 kênh).
 from tensorflow.keras.layers import Activation 
 from tensorflow.keras.activations import swish as tf_swish
 
@@ -39,35 +37,38 @@ os.makedirs(MODEL_CACHE, exist_ok=True)
 # =============================
 # Tải model từ Hugging Face
 # =============================
-HF_MODEL_REPO = "minhtriizkooooo/EMR-Analysis-Cancer-Detection"
-HF_MODEL_FILE = "best_weights_model.keras"
+# ĐÃ SỬA: Sử dụng dấu '_' nếu tên repo trên HF là EMR-Analysis-Cancer_Detection
+HF_MODEL_REPO = "minhtriizkooooo/EMR-Analysis-Cancer_Detection" 
+
+# Tên file model
+HF_MODEL_FILE = "best_weights_model.keras" 
+
 LOCAL_MODEL_PATH = os.path.join(MODEL_CACHE, HF_MODEL_FILE)
 
-# LẤY HF TOKEN TỪ BIẾN MÔI TRƯỜNG (Dành cho Private/Gated Repos)
-# Nếu model là Public, biến token sẽ là None
-HF_TOKEN = os.environ.get("HF_TOKEN") # <--- CODE ĐÃ ĐỌC BIẾN NÀY
+# LẤY HF TOKEN TỪ BIẾN MÔI TRƯỜNG
+HF_TOKEN = os.environ.get("HF_TOKEN") 
 
 model = None
 try:
     print("⏳ Tải model từ Hugging Face...")
     
-    # CẬP NHẬT: Thêm tham số token=HF_TOKEN vào hf_hub_download
+    # SỬ DỤNG TOKEN VÀ ĐƯỜNG DẪN ĐÃ KHẮC PHỤC
     LOCAL_MODEL_PATH = hf_hub_download(
         repo_id=HF_MODEL_REPO, 
         filename=HF_MODEL_FILE, 
         cache_dir=MODEL_CACHE,
-        token=HF_TOKEN # <--- TOKEN ĐƯỢC SỬ DỤNG TẠI ĐÂY
+        token=HF_TOKEN 
     )
     
-    # CHIẾN LƯỢC MỚI NHẤT: Cung cấp custom_objects cho cả 'swish' và 'SiLU', và vẫn tắt compile
+    # Tải model với custom_objects để FIX lỗi 1-channel/Swish
     model = load_model(LOCAL_MODEL_PATH, custom_objects=custom_objects, compile=False)
     print(f"✅ Model THẬT (EfficientNetB0) đã tải xong và lưu tại {LOCAL_MODEL_PATH}")
 
 except Exception as e:
     print(f"❌ Lỗi load model: {e}")
-    # Cập nhật thông báo lỗi để nhắc nhở về token
+    # Thông báo lỗi được cập nhật để chỉ rõ lỗi 404 (Không tìm thấy)
     print("LƯU Ý QUAN TRỌNG: Model THẬT không tải được. Chức năng dự đoán ảnh sẽ bị vô hiệu hóa.")
-    print("KIỂM TRA: Lỗi 401 có thể do repo Hugging Face là Private/Gated. Vui lòng thêm biến môi trường HF_TOKEN trên Render.")
+    print("KIỂM TRA NGAY: Lỗi 404 có nghĩa là **KHÔNG TÌM THẤY KHO CHỨA HOẶC FILE**. Vui lòng kiểm tra lại **tên repo** và **tên file** (cả chữ hoa/thường) trên Hugging Face.")
     print("Kiểm tra: Nếu lỗi vẫn là (..., 1), hãy thử đảm bảo phiên bản TensorFlow/Keras trên Render khớp với Colab.")
 
 
