@@ -26,14 +26,16 @@ ALLOWED_DATA = {'csv', 'xls', 'xlsx'}
 # Load model from Hugging Face
 # =============================
 MODEL_REPO = "minhtriizkooooo/EMR-Analysis-Cancer_Detection"
-MODEL_FILENAME = "best_weights_model.keras"
+MODEL_FILENAME = "best_weights_model.keras"  # Đặt đúng tên file trong repo của bạn
 
 model = None
+model_input_shape = None
 try:
     print("⏳ Đang tải model thật từ Hugging Face…")
     model_path = hf_hub_download(repo_id=MODEL_REPO, filename=MODEL_FILENAME)
     model = load_model(model_path)
-    print("✅ Model đã được tải và load thành công.")
+    model_input_shape = model.input_shape  # dynamic input shape
+    print(f"✅ Model đã load thành công với input_shape: {model_input_shape}")
 except Exception as e:
     print(f"❌ Không thể tải hoặc load model từ HF: {e}")
     model = None
@@ -65,6 +67,7 @@ def login():
 @app.route("/logout")
 def logout():
     session.clear()
+    flash("Bạn đã đăng xuất.", "info")
     return redirect(url_for("login"))
 
 # =============================
@@ -109,13 +112,13 @@ def emr_profile():
             else:
                 df = pd.read_excel(filepath)
 
-            # Loại bỏ các cột toàn NA trước khi describe
-            df = df.dropna(axis=1, how="all")
+            # Lọc các cột toàn NA
+            df = df.loc[:, df.notna().any()]
+
             summary_html = df.describe(include="all").to_html(
                 classes="table-auto w-full border-collapse border border-gray-300",
                 border=0
             )
-
         except Exception as e:
             flash(f"Lỗi khi đọc file: {e}", "danger")
 
@@ -157,11 +160,13 @@ def emr_prediction():
             return render_template("emr_prediction.html", filename=filename, image_b64=image_b64)
 
         try:
-            # Convert grayscale -> 3 channels RGB
-            img = Image.open(filepath).convert("L")  # luôn grayscale
-            img = img.resize((224, 224))
+            img = Image.open(filepath).convert("L")  # đọc grayscale
+            h, w = model_input_shape[1], model_input_shape[2]
+            img = img.resize((w, h))
+
             arr = np.array(img)
-            arr = np.stack((arr,) * 3, axis=-1)  # nhân đôi thành 3 kênh
+            # Convert grayscale -> 3 channel
+            arr = np.stack((arr,) * 3, axis=-1)
             arr = arr / 255.0
             arr = np.expand_dims(arr, axis=0)
 
