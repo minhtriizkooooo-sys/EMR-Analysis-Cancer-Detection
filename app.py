@@ -16,33 +16,50 @@ app = Flask(__name__)
 app.secret_key = secrets.token_hex(16)
 
 UPLOAD_FOLDER = "uploads"
+CACHE_FOLDER = "model_cache"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+os.makedirs(CACHE_FOLDER, exist_ok=True)
 app.config["UPLOAD_FOLDER"] = UPLOAD_FOLDER
 
 ALLOWED_IMG = {'png', 'jpg', 'jpeg', 'bmp', 'gif'}
 ALLOWED_DATA = {'csv', 'xls', 'xlsx'}
 
 # =============================
-# Load model Keras từ Hugging Face
+# Hugging Face model config
 # =============================
 MODEL_REPO = "minhtriizkooooo/EMR-Analysis-Cancer_Detection"
-MODEL_FILENAME = "best_weights_model.keras"  # Đặt đúng tên file trong repo của bạn
+MODEL_FILENAME = "best_weights_model.keras"
+LOCAL_MODEL_PATH = os.path.join(CACHE_FOLDER, MODEL_FILENAME)
 
+# =============================
+# Load / cache model
+# =============================
 model = None
-model_input_shape = (240, 240, 3)  # default fallback
+model_input_shape = None
+
+if not os.path.exists(LOCAL_MODEL_PATH):
+    print("⏳ Tải model từ Hugging Face...")
+    try:
+        downloaded_path = hf_hub_download(
+            repo_id=MODEL_REPO, 
+            filename=MODEL_FILENAME, 
+            cache_dir=CACHE_FOLDER
+        )
+        os.rename(downloaded_path, LOCAL_MODEL_PATH)
+        print(f"✅ Model đã tải xong và lưu cache tại {LOCAL_MODEL_PATH}")
+    except Exception as e:
+        print(f"❌ Lỗi tải model: {e}")
 
 try:
-    print("⏳ Đang tải model từ Hugging Face…")
-    model_path = hf_hub_download(repo_id=MODEL_REPO, filename=MODEL_FILENAME)
-    model = load_model(model_path)
-    model_input_shape = model.input_shape[1:]  # bỏ batch dim
-    print(f"✅ Model đã load với input_shape: {model_input_shape}")
+    model = load_model(LOCAL_MODEL_PATH)
+    model_input_shape = model.input_shape
+    print(f"✅ Model load thành công với input_shape: {model_input_shape}")
 except Exception as e:
-    print(f"❌ Không thể tải hoặc load model từ HF: {e}")
+    print(f"❌ Lỗi load model: {e}")
     model = None
 
 # =============================
-# Helpers
+# Helper
 # =============================
 def allowed_file(filename, allowed_ext):
     return "." in filename and filename.rsplit(".", 1)[1].lower() in allowed_ext
@@ -67,7 +84,7 @@ def login():
 @app.route("/logout")
 def logout():
     session.clear()
-    flash("Bạn đã đăng xuất.", "danger")
+    flash("Bạn đã đăng xuất.", "info")
     return redirect(url_for("login"))
 
 # =============================
@@ -81,7 +98,7 @@ def dashboard():
     return render_template("dashboard.html")
 
 # =============================
-# EMR Profile
+# EMR PROFILE (CSV / Excel)
 # =============================
 @app.route("/emr_profile", methods=["GET", "POST"])
 def emr_profile():
@@ -122,7 +139,7 @@ def emr_profile():
     return render_template("emr_profile.html", summary=summary_html, filename=filename)
 
 # =============================
-# EMR Prediction
+# EMR PREDICTION (Image)
 # =============================
 @app.route("/emr_prediction", methods=["GET", "POST"])
 def emr_prediction():
@@ -147,7 +164,6 @@ def emr_prediction():
         filepath = os.path.join(app.config["UPLOAD_FOLDER"], filename)
         file.save(filepath)
 
-        # Base64 để hiển thị ảnh trong HTML
         with open(filepath, "rb") as f:
             image_b64 = base64.b64encode(f.read()).decode("utf-8")
 
@@ -156,21 +172,16 @@ def emr_prediction():
             return render_template("emr_prediction.html", filename=filename, image_b64=image_b64)
 
         try:
-            # Load ảnh và resize về input của model
-            img = Image.open(filepath).convert("L")  # đọc grayscale
-            w, h = model_input_shape[1], model_input_shape[0]
+            # Convert luôn sang RGB 3 kênh
+            img = Image.open(filepath).convert("RGB")
+            h, w = model_input_shape[1], model_input_shape[2]
             img = img.resize((w, h))
-            arr = np.array(img)
-
-            # Convert grayscale -> 3 channel
-            arr = np.stack((arr,) * 3, axis=-1)
-            arr = arr / 255.0
+            arr = np.array(img) / 255.0
             arr = np.expand_dims(arr, axis=0)
 
             preds = model.predict(arr, verbose=0)
             prob = float(preds[0][0])
             label = "Nodule" if prob >= 0.5 else "Non-nodule"
-
             prediction = {"result": label, "probability": round(prob, 4)}
 
         except Exception as e:
@@ -182,7 +193,7 @@ def emr_prediction():
                            prediction=prediction)
 
 # =============================
-# Run app
+# Run
 # =============================
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
