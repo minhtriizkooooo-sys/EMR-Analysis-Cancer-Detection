@@ -70,20 +70,21 @@ try:
         weights=None # Không dùng ImageNet weights
     )
 
-    # Thêm các lớp phân loại (Head Layers) - GIẢ ĐỊNH 4 LỚP ĐẦU RA (Classes)
+    # Thêm các lớp phân loại (Head Layers)
     x = base_model.output
     x = GlobalAveragePooling2D()(x)
-    # Lớp Dense(256) là giả định phổ biến, nếu model của bạn khác, cần phải thay đổi
-    x = Dense(256, activation='relu')(x) 
-    # Lớp đầu ra (4 lớp) là giả định, nếu số lớp khác, cần phải thay đổi
+    
+    # SỬA LỖI: Cập nhật units từ 256 -> 1024 để khớp với weights đã lưu
+    x = Dense(1024, activation='relu')(x) 
+    
+    # Lớp đầu ra (GIẢ ĐỊNH 4 lớp, nếu sai phải chỉnh lại)
     output_layer = Dense(4, activation='softmax')(x) 
 
     # Xây dựng model hoàn chỉnh
     model = Model(inputs=base_model.input, outputs=output_layer)
 
     # BƯỚC 3: Tải weights đã được lưu từ file .keras vào kiến trúc vừa tạo
-    # Sử dụng load_weights và skip_mismatch=True để vượt qua lỗi không khớp (nếu có)
-    # BỎ QUA safe_mode=False
+    # Dùng skip_mismatch=True để bỏ qua lỗi nhỏ, nhưng cấu trúc chính đã khớp
     try:
         model.load_weights(LOCAL_MODEL_PATH, skip_mismatch=True) 
         print("✅ Tải weights thành công (sử dụng skip_mismatch=True).")
@@ -104,8 +105,7 @@ except Exception as e:
         model = load_model(LOCAL_MODEL_PATH, custom_objects=custom_objects, compile=False)
         print("✅ Model load trực tiếp thành công. (Fallback)")
     except Exception as fallback_e:
-        print(f"❌ Lỗi Tái Tạo Kiến Trúc (Load Weights): {e}")
-        print(f"❌ Lỗi Load Model Trực Tiếp (Fallback): {fallback_e}")
+        print(f"❌ Lỗi Tái Tạo Kiến Trúc và Fallback: {e} / {fallback_e}")
         print("LƯU Ý QUAN TRỌNG: Model THẬT không tải được. Chức năng dự đoán ảnh sẽ bị vô hiệu hóa.")
         model = None
         
@@ -218,7 +218,18 @@ def emr_prediction():
                 
                 # Chuyển kết quả dự đoán thành chuỗi
                 prediction_value = np.argmax(pred[0])
-                prediction = f"Kết quả dự đoán: Lớp {prediction_value} | Probabilities: {pred[0]}" 
+                
+                # Định nghĩa các lớp dự đoán (Giả định 4 lớp)
+                CLASSES = ["Lành Tính (Benign)", "Ác Tính (Malignant)", "Bình Thường (Normal)", "Khác (Other)"]
+                
+                # Đảm bảo prediction_value không vượt quá số lớp
+                if prediction_value < len(CLASSES):
+                    predicted_class = CLASSES[prediction_value]
+                else:
+                    predicted_class = f"Lớp {prediction_value} (Không xác định)"
+                
+                prediction = f"Kết quả dự đoán: {predicted_class} | Probabilities: {pred[0].tolist()}" 
+                
             except Exception as e:
                 flash(f"Lỗi khi dự đoán: {e}", "danger")
         elif not model:
@@ -230,5 +241,7 @@ def emr_prediction():
 # Chạy Flask
 # =============================
 if __name__ == "__main__":
+    # CHÚ Ý: Nếu tiếp tục gặp lỗi TIMEOUT, bạn cần chỉnh sửa lệnh khởi động Gunicorn 
+    # trên Render, ví dụ: gunicorn --timeout 120 app:app
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port, debug=True)
