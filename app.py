@@ -23,25 +23,26 @@ ALLOWED_IMG = {'png', 'jpg', 'jpeg', 'bmp', 'gif'}
 ALLOWED_DATA = {'csv', 'xls', 'xlsx'}
 
 # =============================
-# Load model from Hugging Face
+# Load model Keras từ Hugging Face
 # =============================
 MODEL_REPO = "minhtriizkooooo/EMR-Analysis-Cancer_Detection"
 MODEL_FILENAME = "best_weights_model.keras"  # Đặt đúng tên file trong repo của bạn
 
 model = None
-model_input_shape = None
+model_input_shape = (240, 240, 3)  # default fallback
+
 try:
-    print("⏳ Đang tải model thật từ Hugging Face…")
+    print("⏳ Đang tải model từ Hugging Face…")
     model_path = hf_hub_download(repo_id=MODEL_REPO, filename=MODEL_FILENAME)
     model = load_model(model_path)
-    model_input_shape = model.input_shape  # dynamic input shape
-    print(f"✅ Model đã load thành công với input_shape: {model_input_shape}")
+    model_input_shape = model.input_shape[1:]  # bỏ batch dim
+    print(f"✅ Model đã load với input_shape: {model_input_shape}")
 except Exception as e:
     print(f"❌ Không thể tải hoặc load model từ HF: {e}")
     model = None
 
 # =============================
-# Helper
+# Helpers
 # =============================
 def allowed_file(filename, allowed_ext):
     return "." in filename and filename.rsplit(".", 1)[1].lower() in allowed_ext
@@ -57,7 +58,6 @@ def login():
         password = request.form.get("password")
         if user_id == "user_demo" and password == "Test@123456":
             session["user"] = user_id
-            flash("Đăng nhập thành công!", "success")
             return redirect(url_for("dashboard"))
         else:
             flash("Sai thông tin đăng nhập!", "danger")
@@ -67,7 +67,7 @@ def login():
 @app.route("/logout")
 def logout():
     session.clear()
-    flash("Bạn đã đăng xuất.", "info")
+    flash("Bạn đã đăng xuất.", "danger")
     return redirect(url_for("login"))
 
 # =============================
@@ -81,7 +81,7 @@ def dashboard():
     return render_template("dashboard.html")
 
 # =============================
-# EMR PROFILE (phân tích file CSV/Excel)
+# EMR Profile
 # =============================
 @app.route("/emr_profile", methods=["GET", "POST"])
 def emr_profile():
@@ -97,7 +97,6 @@ def emr_profile():
         if not file or file.filename == "":
             flash("Chưa chọn file để tải lên!", "danger")
             return redirect(request.url)
-
         if not allowed_file(file.filename, ALLOWED_DATA):
             flash("Chỉ hỗ trợ định dạng .csv, .xls, .xlsx!", "danger")
             return redirect(request.url)
@@ -112,9 +111,7 @@ def emr_profile():
             else:
                 df = pd.read_excel(filepath)
 
-            # Lọc các cột toàn NA
             df = df.loc[:, df.notna().any()]
-
             summary_html = df.describe(include="all").to_html(
                 classes="table-auto w-full border-collapse border border-gray-300",
                 border=0
@@ -125,7 +122,7 @@ def emr_profile():
     return render_template("emr_profile.html", summary=summary_html, filename=filename)
 
 # =============================
-# EMR PREDICTION (phân tích hình ảnh)
+# EMR Prediction
 # =============================
 @app.route("/emr_prediction", methods=["GET", "POST"])
 def emr_prediction():
@@ -142,7 +139,6 @@ def emr_prediction():
         if not file or file.filename == "":
             flash("Chưa chọn hình ảnh!", "danger")
             return redirect(request.url)
-
         if not allowed_file(file.filename, ALLOWED_IMG):
             flash("Định dạng ảnh không hợp lệ!", "danger")
             return redirect(request.url)
@@ -160,11 +156,12 @@ def emr_prediction():
             return render_template("emr_prediction.html", filename=filename, image_b64=image_b64)
 
         try:
+            # Load ảnh và resize về input của model
             img = Image.open(filepath).convert("L")  # đọc grayscale
-            h, w = model_input_shape[1], model_input_shape[2]
+            w, h = model_input_shape[1], model_input_shape[0]
             img = img.resize((w, h))
-
             arr = np.array(img)
+
             # Convert grayscale -> 3 channel
             arr = np.stack((arr,) * 3, axis=-1)
             arr = arr / 255.0
@@ -185,7 +182,7 @@ def emr_prediction():
                            prediction=prediction)
 
 # =============================
-# Run
+# Run app
 # =============================
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
