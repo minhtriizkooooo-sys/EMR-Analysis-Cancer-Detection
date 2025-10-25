@@ -6,6 +6,7 @@ from flask import Flask, render_template, request, redirect, url_for, session, f
 from werkzeug.utils import secure_filename
 from PIL import Image
 import base64
+from io import BytesIO
 
 import tensorflow as tf
 from tensorflow.keras.models import Model
@@ -50,6 +51,7 @@ def load_model_once():
             token=HF_TOKEN
         )
 
+        # ===== EfficientNetB0 =====
         base_model = EfficientNetB0(
             input_shape=(224, 224, 3),
             include_top=False,
@@ -133,6 +135,7 @@ def emr_profile():
 def emr_prediction():
     if "user" not in session:
         return redirect(url_for("login"))
+
     filename = None
     prediction = None
     image_b64 = None
@@ -144,41 +147,50 @@ def emr_prediction():
             file_path = os.path.join(UPLOAD_FOLDER, filename)
             file.save(file_path)
 
-            # Chuyển ảnh sang base64 để hiển thị preview
-            with open(file_path, "rb") as f:
-                image_b64 = base64.b64encode(f.read()).decode("utf-8")
-
+            # Load model từ HF nếu chưa load
             mdl = load_model_once()
             if mdl:
                 try:
-                    img = Image.open(file_path).convert("L")
+                    # --- Load ảnh RGB ---
+                    img = Image.open(file_path).convert("RGB")
                     img = img.resize((224, 224))
-                    x = np.stack([np.array(img)/255.0]*3, axis=-1)
+                    x = np.array(img)/255.0
                     x = np.expand_dims(x, axis=0)
 
+                    # --- Dự đoán ---
                     pred = mdl.predict(x)
-                    prediction_value = np.argmax(pred[0])
-                    predicted_class = CLASSES[prediction_value] if prediction_value < NUM_CLASSES else f"Lớp {prediction_value+1}"
+                    pred_class_index = np.argmax(pred[0])
+                    pred_prob = float(pred[0][pred_class_index])
 
-                    # Tạo object phù hợp template
-                    if predicted_class.lower().find("nodule") != -1 or prediction_value % 2 == 0:
-                        result_label = "Nodule"
-                    else:
-                        result_label = "Non-nodule"
+                    # --- Map sang Nodule / Non-nodule ---
+                    # TODO: Cập nhật NODULE_CLASSES theo model thật
+                    NODULE_CLASSES = list(range(64))  # ví dụ: 0-63 là Nodule
+                    result_label = "Nodule" if pred_class_index in NODULE_CLASSES else "Non-nodule"
 
-                    prediction = type("Prediction", (), {})()  # Tạo object trống
-                    prediction.result = result_label
-                    prediction.probability = float(pred[0][prediction_value])
+                    # --- Top 5 class ---
+                    top_5_indices = np.argsort(pred[0])[-5:][::-1]
+                    top_5_probs = pred[0][top_5_indices]
+                    top_5_results = [f"{CLASSES[i]}: {top_5_probs[idx]*100:.2f}%" for idx, i in enumerate(top_5_indices)]
+
+                    # --- Chuẩn bị dữ liệu để hiển thị ---
+                    prediction = {
+                        "result": result_label,
+                        "probability": pred_prob,
+                        "top_5": top_5_results
+                    }
+
+                    # --- Convert ảnh sang base64 ---
+                    buffered = BytesIO()
+                    img.save(buffered, format="JPEG")
+                    image_b64 = base64.b64encode(buffered.getvalue()).decode()
 
                 except Exception as e:
                     flash(f"Lỗi khi dự đoán: {e}", "danger")
             else:
                 flash("Model chưa load được!", "danger")
 
-    return render_template("emr_prediction.html",
-                           filename=filename,
-                           prediction=prediction,
-                           image_b64=image_b64)
+    return render_template("emr_prediction.html", filename=filename,
+                           prediction=prediction, image_b64=image_b64)
 
 # =============================
 # Run Flask
