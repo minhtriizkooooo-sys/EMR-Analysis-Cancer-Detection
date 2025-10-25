@@ -2,16 +2,15 @@ import os
 import secrets
 import numpy as np
 import pandas as pd
-# SỬ DỤNG TF.KERAS CHUẨN ĐỂ TƯƠNG THÍCH TỐT NHẤT
 import tensorflow as tf 
 from flask import Flask, render_template, request, redirect, url_for, session, send_from_directory, flash
 from werkzeug.utils import secure_filename
 from PIL import Image
 
-# THAY ĐỔI: Sử dụng load_weights thay vì load_model hoàn toàn
+# SỬ DỤNG TF.KERAS CHUẨN ĐỂ TƯƠNG THÍCH TỐT NHẤT
 from tensorflow.keras.models import load_model 
 from tensorflow.keras.applications import EfficientNetB0 
-from tensorflow.keras.layers import Input, Dense, GlobalAveragePooling2D, Conv2D, BatchNormalization, Activation
+from tensorflow.keras.layers import Input, Dense, GlobalAveragePooling2D
 from tensorflow.keras.models import Model
 from tensorflow.keras.optimizers import Adam
 from tensorflow.keras.activations import swish as tf_swish
@@ -37,13 +36,9 @@ os.makedirs(MODEL_CACHE, exist_ok=True)
 # =============================
 # Tải model từ Hugging Face
 # =============================
-# Repo ID
+# Repo ID và Tên file model
 HF_MODEL_REPO = "minhtriizkooooo/EMR-Analysis-Cancer_Detection" 
-
-# Tên file model
 HF_MODEL_FILE = "best_weights_model.keras" 
-
-LOCAL_MODEL_PATH = os.path.join(MODEL_CACHE, HF_MODEL_FILE)
 
 # LẤY HF TOKEN TỪ BIẾN MÔI TRƯỜNG
 HF_TOKEN = os.environ.get("HF_TOKEN") 
@@ -60,10 +55,10 @@ try:
         token=HF_TOKEN 
     )
     
-    # BƯỚC 2: Xây dựng lại kiến trúc model (Architecture)
-    # Cấu hình phải khớp chính xác với EfficientNetB0 (224x224x3) + Head Layers
+    # BƯỚC 2: Xây dựng lại kiến trúc model (Architecture) - ĐÃ SỬA LỖI MỚI
+    # Cấu hình phải khớp chính xác: EfficientNetB0 -> GlobalPooling -> Dense(1024) -> Dense(512) -> Dense(4)
     
-    # Khởi tạo EfficientNetB0 với đầu vào 3 kênh màu theo yêu cầu của model lưu.
+    # Khởi tạo EfficientNetB0
     base_model = EfficientNetB0(
         input_shape=(224, 224, 3), 
         include_top=False, 
@@ -74,17 +69,19 @@ try:
     x = base_model.output
     x = GlobalAveragePooling2D()(x)
     
-    # SỬA LỖI: Cập nhật units từ 256 -> 1024 để khớp với weights đã lưu
+    # Lớp ẩn 1: 1024 units (đã sửa lần trước)
     x = Dense(1024, activation='relu')(x) 
     
-    # Lớp đầu ra (GIẢ ĐỊNH 4 lớp, nếu sai phải chỉnh lại)
+    # Lớp ẩn 2: 512 units (Sửa lỗi dựa trên log mismatch mới nhất)
+    x = Dense(512, activation='relu')(x)
+    
+    # Lớp đầu ra: 4 classes (Giả định)
     output_layer = Dense(4, activation='softmax')(x) 
 
     # Xây dựng model hoàn chỉnh
     model = Model(inputs=base_model.input, outputs=output_layer)
 
     # BƯỚC 3: Tải weights đã được lưu từ file .keras vào kiến trúc vừa tạo
-    # Dùng skip_mismatch=True để bỏ qua lỗi nhỏ, nhưng cấu trúc chính đã khớp
     try:
         model.load_weights(LOCAL_MODEL_PATH, skip_mismatch=True) 
         print("✅ Tải weights thành công (sử dụng skip_mismatch=True).")
@@ -99,24 +96,19 @@ try:
     print(f"✅ Model THẬT (EfficientNetB0) đã được TÁI TẠO và tải weights thành công từ {LOCAL_MODEL_PATH}")
 
 except Exception as e:
-    # Nếu lỗi trong quá trình TÁI TẠO KIẾN TRÚC, ta sẽ thử load model trực tiếp
-    try:
-        # Thử load model trực tiếp, nhưng phải thêm custom_objects
-        model = load_model(LOCAL_MODEL_PATH, custom_objects=custom_objects, compile=False)
-        print("✅ Model load trực tiếp thành công. (Fallback)")
-    except Exception as fallback_e:
-        print(f"❌ Lỗi Tái Tạo Kiến Trúc và Fallback: {e} / {fallback_e}")
-        print("LƯU Ý QUAN TRỌNG: Model THẬT không tải được. Chức năng dự đoán ảnh sẽ bị vô hiệu hóa.")
-        model = None
+    # Fallback chỉ để log lỗi, không cố gắng load trực tiếp vì đã biết lỗi cấu trúc
+    print(f"❌ Lỗi Tái Tạo Kiến Trúc: {e}")
+    print("LƯU Ý QUAN TRỌNG: Model THẬT không tải được. Chức năng dự đoán ảnh sẽ bị vô hiệu hóa.")
+    model = None
         
 
 # =============================
-# Dummy user
+# Dummy user (Giữ nguyên)
 # =============================
 USERS = {"user_demo": "Test@123456"}
 
 # =============================
-# Routes
+# Routes (Giữ nguyên)
 # =============================
 @app.route("/", methods=["GET", "POST"])
 def login():
@@ -145,7 +137,7 @@ def logout():
     return redirect(url_for("login"))
 
 # =============================
-# EMR CSV/Excel Analysis
+# EMR CSV/Excel Analysis (Giữ nguyên)
 # =============================
 @app.route("/emr_profile", methods=["GET", "POST"])
 def emr_profile():
@@ -179,7 +171,7 @@ def emr_profile():
     return render_template("emr_profile.html", filename=filename, summary=summary)
 
 # =============================
-# EMR Image Prediction
+# EMR Image Prediction (Giữ nguyên)
 # =============================
 @app.route("/emr_prediction", methods=["GET", "POST"])
 def emr_prediction():
@@ -238,10 +230,9 @@ def emr_prediction():
     return render_template("emr_prediction.html", filename=filename, prediction=prediction)
 
 # =============================
-# Chạy Flask
+# Chạy Flask (Giữ nguyên)
 # =============================
 if __name__ == "__main__":
-    # CHÚ Ý: Nếu tiếp tục gặp lỗi TIMEOUT, bạn cần chỉnh sửa lệnh khởi động Gunicorn 
-    # trên Render, ví dụ: gunicorn --timeout 120 app:app
+    # CHÚ Ý: Cần tăng timeout Gunicorn trên Render!
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port, debug=True)
