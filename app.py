@@ -43,10 +43,21 @@ HF_MODEL_REPO = "minhtriizkooooo/EMR-Analysis-Cancer-Detection"
 HF_MODEL_FILE = "best_weights_model.keras"
 LOCAL_MODEL_PATH = os.path.join(MODEL_CACHE, HF_MODEL_FILE)
 
+# LẤY HF TOKEN TỪ BIẾN MÔI TRƯỜNG (Dành cho Private/Gated Repos)
+# Nếu model là Public, biến token sẽ là None
+HF_TOKEN = os.environ.get("HF_TOKEN") # <--- CODE ĐÃ ĐỌC BIẾN NÀY
+
 model = None
 try:
     print("⏳ Tải model từ Hugging Face...")
-    LOCAL_MODEL_PATH = hf_hub_download(repo_id=HF_MODEL_REPO, filename=HF_MODEL_FILE, cache_dir=MODEL_CACHE)
+    
+    # CẬP NHẬT: Thêm tham số token=HF_TOKEN vào hf_hub_download
+    LOCAL_MODEL_PATH = hf_hub_download(
+        repo_id=HF_MODEL_REPO, 
+        filename=HF_MODEL_FILE, 
+        cache_dir=MODEL_CACHE,
+        token=HF_TOKEN # <--- TOKEN ĐƯỢC SỬ DỤNG TẠI ĐÂY
+    )
     
     # CHIẾN LƯỢC MỚI NHẤT: Cung cấp custom_objects cho cả 'swish' và 'SiLU', và vẫn tắt compile
     model = load_model(LOCAL_MODEL_PATH, custom_objects=custom_objects, compile=False)
@@ -54,7 +65,9 @@ try:
 
 except Exception as e:
     print(f"❌ Lỗi load model: {e}")
+    # Cập nhật thông báo lỗi để nhắc nhở về token
     print("LƯU Ý QUAN TRỌNG: Model THẬT không tải được. Chức năng dự đoán ảnh sẽ bị vô hiệu hóa.")
+    print("KIỂM TRA: Lỗi 401 có thể do repo Hugging Face là Private/Gated. Vui lòng thêm biến môi trường HF_TOKEN trên Render.")
     print("Kiểm tra: Nếu lỗi vẫn là (..., 1), hãy thử đảm bảo phiên bản TensorFlow/Keras trên Render khớp với Colab.")
 
 
