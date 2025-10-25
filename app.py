@@ -14,15 +14,14 @@ from tensorflow.keras.models import load_model
 # ĐỊNH NGHĨA CUSTOM OBJECTS MỚI (FIX LỖI)
 # EfficientNet B0 sử dụng hàm kích hoạt Swish (hay còn gọi là SiLU).
 # Khi tải model, Keras đôi khi không nhận diện được hàm này một cách chính xác
-# và dẫn đến việc xây dựng lại cấu trúc mạng sai (ví dụ: lỗi 1 kênh).
-# Ta sẽ định nghĩa lại swish bằng hàm cấp thấp của TensorFlow.
+# và dẫn đến việc xây dựng lại cấu trúc mạng sai (lỗi 1 kênh).
 from tensorflow.keras.layers import Activation 
 from tensorflow.keras.activations import swish as tf_swish
+
+# CẬP NHẬT QUAN TRỌNG: Đăng ký cả hai tên gọi 'swish' và 'SiLU'
 custom_objects = {
-    'swish': tf_swish 
-    # Nếu mô hình được lưu bằng cách nào đó đã đổi tên swish thành SiLU, 
-    # bạn có thể cần thêm: 'SiLU': tf_swish 
-    # Nhưng 'swish' là tên phổ biến nhất cho EfficientNet trong Keras.
+    'swish': tf_swish,
+    'SiLU': tf_swish  
 }
 
 from huggingface_hub import hf_hub_download
@@ -49,14 +48,14 @@ try:
     print("⏳ Tải model từ Hugging Face...")
     LOCAL_MODEL_PATH = hf_hub_download(repo_id=HF_MODEL_REPO, filename=HF_MODEL_FILE, cache_dir=MODEL_CACHE)
     
-    # CHIẾN LƯỢC MỚI NHẤT: Cung cấp custom_objects cho 'swish' và vẫn tắt compile
+    # CHIẾN LƯỢC MỚI NHẤT: Cung cấp custom_objects cho cả 'swish' và 'SiLU', và vẫn tắt compile
     model = load_model(LOCAL_MODEL_PATH, custom_objects=custom_objects, compile=False)
     print(f"✅ Model THẬT (EfficientNetB0) đã tải xong và lưu tại {LOCAL_MODEL_PATH}")
 
 except Exception as e:
     print(f"❌ Lỗi load model: {e}")
     print("LƯU Ý QUAN TRỌNG: Model THẬT không tải được. Chức năng dự đoán ảnh sẽ bị vô hiệu hóa.")
-    print("Kiểm tra: Nếu lỗi vẫn là (..., 1), hãy thử thêm 'SiLU' vào custom_objects.")
+    print("Kiểm tra: Nếu lỗi vẫn là (..., 1), hãy thử đảm bảo phiên bản TensorFlow/Keras trên Render khớp với Colab.")
 
 
 # =============================
