@@ -8,6 +8,7 @@ from werkzeug.utils import secure_filename
 from huggingface_hub import hf_hub_download
 from tensorflow.keras.models import load_model
 import base64
+import traceback
 
 # =============================
 # Flask config
@@ -26,16 +27,17 @@ ALLOWED_DATA = {'csv', 'xls', 'xlsx'}
 # Load model from Hugging Face
 # =============================
 MODEL_REPO = "minhtriizkooooo/EMR-Analysis-Cancer_Detection"
-MODEL_FILENAME = "best_weights_model.keras"  # Đặt đúng tên file trong repo của bạn
+MODEL_FILENAME = "best_weights_model.keras"
 
 model = None
 try:
     print("⏳ Đang tải model từ Hugging Face…")
-    model_path = hf_hub_download(repo_id=MODEL_REPO, filename=MODEL_FILENAME)
+    model_path = hf_hub_download(repo_id=MODEL_REPO, filename=MODEL_FILENAME, repo_type="model")
     model = load_model(model_path)
     print("✅ Model đã được tải và load thành công.")
 except Exception as e:
-    print(f"❌ Không thể tải hoặc load model từ HF: {e}")
+    print("❌ Không thể tải hoặc load model từ HF:")
+    traceback.print_exc()
     model = None
 
 # =============================
@@ -43,6 +45,55 @@ except Exception as e:
 # =============================
 def allowed_file(filename, allowed_ext):
     return "." in filename and filename.rsplit(".", 1)[1].lower() in allowed_ext
+
+
+def analyze_emr_data(df: pd.DataFrame):
+    """Phân tích hồ sơ EMR chuyên sâu, trả về kết quả tổng quan và nhận định."""
+    results = {}
+
+    # Thông tin tổng quan
+    results["Số bệnh nhân"] = len(df)
+    if "Tuổi" in df.columns:
+        results["Tuổi trung bình"] = round(df["Tuổi"].mean(), 1)
+    if "Giới tính" in df.columns:
+        gender_dist = df["Giới tính"].value_counts(normalize=True) * 100
+        results["Tỷ lệ giới tính"] = f"Nữ: {gender_dist.get('Nữ', 0):.1f}% | Nam: {gender_dist.get('Nam', 0):.1f}%"
+
+    # Phân tích chỉ số lâm sàng nếu có
+    health_notes = []
+    if "Glucose" in df.columns:
+        avg_glucose = df["Glucose"].mean()
+        if avg_glucose > 126:
+            health_notes.append(f"⚠️ Mức Glucose trung bình cao ({avg_glucose:.1f}) → Nguy cơ tiểu đường.")
+        else:
+            health_notes.append(f"✅ Mức Glucose trung bình ổn định ({avg_glucose:.1f}).")
+
+    if "Cholesterol" in df.columns:
+        avg_chol = df["Cholesterol"].mean()
+        if avg_chol > 200:
+            health_notes.append(f"⚠️ Cholesterol trung bình cao ({avg_chol:.1f}) → Nguy cơ tim mạch.")
+        else:
+            health_notes.append(f"✅ Cholesterol trung bình bình thường ({avg_chol:.1f}).")
+
+    if not health_notes:
+        health_notes.append("Không đủ dữ liệu để đánh giá chỉ số sinh học.")
+
+    # Gợi ý y học
+    if len(health_notes) >= 2 and any("⚠️" in note for note in health_notes):
+        results["Kết luận sơ bộ"] = "⚠️ Hồ sơ có một số dấu hiệu bất thường, cần kiểm tra chuyên sâu."
+    else:
+        results["Kết luận sơ bộ"] = "✅ Hồ sơ sức khỏe tổng quan bình thường."
+
+    results["Nhận định chi tiết"] = "<br>".join(health_notes)
+
+    # Thống kê cơ bản dạng HTML
+    summary_html = df.describe(include="all").to_html(
+        classes="table-auto w-full border-collapse border border-gray-300",
+        border=0
+    )
+
+    return results, summary_html
+
 
 # =============================
 # Login
@@ -61,10 +112,12 @@ def login():
             return redirect(url_for("login"))
     return render_template("index.html")
 
+
 @app.route("/logout")
 def logout():
     session.clear()
     return redirect(url_for("login"))
+
 
 # =============================
 # Dashboard
@@ -76,6 +129,7 @@ def dashboard():
         return redirect(url_for("login"))
     return render_template("dashboard.html")
 
+
 # =============================
 # EMR PROFILE (phân tích file CSV/Excel)
 # =============================
@@ -85,8 +139,9 @@ def emr_profile():
         flash("Vui lòng đăng nhập để sử dụng chức năng này.", "danger")
         return redirect(url_for("login"))
 
-    summary_html = None
     filename = None
+    summary_html = None
+    analysis = None
 
     if request.method == "POST":
         file = request.files.get("file")
@@ -108,16 +163,16 @@ def emr_profile():
             else:
                 df = pd.read_excel(filepath)
 
-            # Tạo bảng mô tả dữ liệu
-            summary_html = df.describe(include="all").to_html(
-                classes="table-auto w-full border-collapse border border-gray-300",
-                border=0
-            )
+            analysis, summary_html = analyze_emr_data(df)
 
         except Exception as e:
-            flash(f"Lỗi khi đọc file: {e}", "danger")
+            flash(f"Lỗi khi phân tích EMR: {e}", "danger")
 
-    return render_template("emr_profile.html", summary=summary_html, filename=filename)
+    return render_template("emr_profile.html",
+                           filename=filename,
+                           analysis=analysis,
+                           summary=summary_html)
+
 
 # =============================
 # EMR PREDICTION (phân tích hình ảnh)
@@ -146,7 +201,7 @@ def emr_prediction():
         filepath = os.path.join(app.config["UPLOAD_FOLDER"], filename)
         file.save(filepath)
 
-        # Base64 để hiển thị ảnh trong HTML
+        # Base64 hiển thị ảnh trong HTML
         with open(filepath, "rb") as f:
             image_b64 = base64.b64encode(f.read()).decode("utf-8")
 
@@ -161,9 +216,13 @@ def emr_prediction():
 
             preds = model.predict(arr, verbose=0)
             prob = float(preds[0][0])
-            label = "Nodule" if prob >= 0.5 else "Non-nodule"
+            label = "Ung thư" if prob >= 0.5 else "Lành tính"
 
-            prediction = {"result": label, "probability": round(prob, 4)}
+            prediction = {
+                "Kết quả": label,
+                "Xác suất": f"{prob*100:.2f}%",
+                "Nhận định": "⚠️ Dấu hiệu nghi ngờ ác tính, cần kiểm tra sâu hơn." if prob >= 0.5 else "✅ Không phát hiện bất thường rõ ràng."
+            }
 
         except Exception as e:
             flash(f"Lỗi khi dự đoán ảnh: {e}", "danger")
@@ -172,6 +231,7 @@ def emr_prediction():
                            filename=filename,
                            image_b64=image_b64,
                            prediction=prediction)
+
 
 # =============================
 # Run
