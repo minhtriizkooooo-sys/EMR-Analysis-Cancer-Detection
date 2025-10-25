@@ -8,10 +8,11 @@ from werkzeug.utils import secure_filename
 from huggingface_hub import hf_hub_download
 from tensorflow.keras.models import load_model
 import base64
-import traceback
+import io
+import matplotlib.pyplot as plt
 
 # =============================
-# Flask config
+# Flask Config
 # =============================
 app = Flask(__name__)
 app.secret_key = secrets.token_hex(16)
@@ -24,20 +25,19 @@ ALLOWED_IMG = {'png', 'jpg', 'jpeg', 'bmp', 'gif'}
 ALLOWED_DATA = {'csv', 'xls', 'xlsx'}
 
 # =============================
-# Load model from Hugging Face
+# Load Model from Hugging Face
 # =============================
 MODEL_REPO = "minhtriizkooooo/EMR-Analysis-Cancer_Detection"
 MODEL_FILENAME = "best_weights_model.keras"
 
 model = None
 try:
-    print("⏳ Đang tải model từ Hugging Face…")
-    model_path = hf_hub_download(repo_id=MODEL_REPO, filename=MODEL_FILENAME, repo_type="model")
+    print("⏳ Đang tải model thật từ Hugging Face...")
+    model_path = hf_hub_download(repo_id=MODEL_REPO, filename=MODEL_FILENAME)
     model = load_model(model_path)
-    print("✅ Model đã được tải và load thành công.")
+    print("✅ Model thật đã được tải và load thành công.")
 except Exception as e:
-    print("❌ Không thể tải hoặc load model từ HF:")
-    traceback.print_exc()
+    print(f"❌ Không thể tải hoặc load model thật từ HF: {e}")
     model = None
 
 # =============================
@@ -46,54 +46,43 @@ except Exception as e:
 def allowed_file(filename, allowed_ext):
     return "." in filename and filename.rsplit(".", 1)[1].lower() in allowed_ext
 
+def df_analysis_summary(df):
+    """Tạo bản phân tích chuyên sâu từ dữ liệu EMR"""
+    summary = df.describe(include="all").T
+    null_count = df.isnull().sum()
+    summary["Missing Values"] = null_count
+    summary_html = summary.to_html(classes="table table-striped table-bordered", border=0)
 
-def analyze_emr_data(df: pd.DataFrame):
-    """Phân tích hồ sơ EMR chuyên sâu, trả về kết quả tổng quan và nhận định."""
-    results = {}
+    # Nhận xét AI cơ bản
+    remarks = []
+    if df.shape[0] < 10:
+        remarks.append("⚠️ Số lượng bản ghi ít, khó phân tích xu hướng.")
+    if (null_count > 0).any():
+        remarks.append("⚠️ Dữ liệu còn thiếu, cần làm sạch trước khi huấn luyện AI.")
+    if "age" in df.columns and df["age"].mean() > 60:
+        remarks.append("🧓 Dữ liệu bệnh nhân chủ yếu là người cao tuổi — nguy cơ ung thư cao hơn trung bình.")
+    if "smoking" in df.columns and df["smoking"].mean() > 0.5:
+        remarks.append("🚬 Tỷ lệ hút thuốc cao — yếu tố rủi ro chính cần chú ý.")
+    if not remarks:
+        remarks.append("✅ Dữ liệu đạt yêu cầu cho bước phân tích tiếp theo.")
 
-    # Thông tin tổng quan
-    results["Số bệnh nhân"] = len(df)
-    if "Tuổi" in df.columns:
-        results["Tuổi trung bình"] = round(df["Tuổi"].mean(), 1)
-    if "Giới tính" in df.columns:
-        gender_dist = df["Giới tính"].value_counts(normalize=True) * 100
-        results["Tỷ lệ giới tính"] = f"Nữ: {gender_dist.get('Nữ', 0):.1f}% | Nam: {gender_dist.get('Nam', 0):.1f}%"
+    return summary_html, remarks
 
-    # Phân tích chỉ số lâm sàng nếu có
-    health_notes = []
-    if "Glucose" in df.columns:
-        avg_glucose = df["Glucose"].mean()
-        if avg_glucose > 126:
-            health_notes.append(f"⚠️ Mức Glucose trung bình cao ({avg_glucose:.1f}) → Nguy cơ tiểu đường.")
-        else:
-            health_notes.append(f"✅ Mức Glucose trung bình ổn định ({avg_glucose:.1f}).")
+def create_correlation_plot(df):
+    """Tạo heatmap tương quan dạng hình ảnh"""
+    corr = df.corr(numeric_only=True)
+    fig, ax = plt.subplots(figsize=(5, 4))
+    cax = ax.matshow(corr, cmap="coolwarm")
+    plt.xticks(range(len(corr.columns)), corr.columns, rotation=45, ha="left", fontsize=8)
+    plt.yticks(range(len(corr.columns)), corr.columns, fontsize=8)
+    plt.colorbar(cax)
+    plt.tight_layout()
 
-    if "Cholesterol" in df.columns:
-        avg_chol = df["Cholesterol"].mean()
-        if avg_chol > 200:
-            health_notes.append(f"⚠️ Cholesterol trung bình cao ({avg_chol:.1f}) → Nguy cơ tim mạch.")
-        else:
-            health_notes.append(f"✅ Cholesterol trung bình bình thường ({avg_chol:.1f}).")
-
-    if not health_notes:
-        health_notes.append("Không đủ dữ liệu để đánh giá chỉ số sinh học.")
-
-    # Gợi ý y học
-    if len(health_notes) >= 2 and any("⚠️" in note for note in health_notes):
-        results["Kết luận sơ bộ"] = "⚠️ Hồ sơ có một số dấu hiệu bất thường, cần kiểm tra chuyên sâu."
-    else:
-        results["Kết luận sơ bộ"] = "✅ Hồ sơ sức khỏe tổng quan bình thường."
-
-    results["Nhận định chi tiết"] = "<br>".join(health_notes)
-
-    # Thống kê cơ bản dạng HTML
-    summary_html = df.describe(include="all").to_html(
-        classes="table-auto w-full border-collapse border border-gray-300",
-        border=0
-    )
-
-    return results, summary_html
-
+    buf = io.BytesIO()
+    plt.savefig(buf, format="png", bbox_inches="tight")
+    plt.close(fig)
+    buf.seek(0)
+    return base64.b64encode(buf.read()).decode("utf-8")
 
 # =============================
 # Login
@@ -112,12 +101,10 @@ def login():
             return redirect(url_for("login"))
     return render_template("index.html")
 
-
 @app.route("/logout")
 def logout():
     session.clear()
     return redirect(url_for("login"))
-
 
 # =============================
 # Dashboard
@@ -129,9 +116,8 @@ def dashboard():
         return redirect(url_for("login"))
     return render_template("dashboard.html")
 
-
 # =============================
-# EMR PROFILE (phân tích file CSV/Excel)
+# EMR PROFILE (phân tích chuyên sâu CSV/Excel)
 # =============================
 @app.route("/emr_profile", methods=["GET", "POST"])
 def emr_profile():
@@ -139,9 +125,7 @@ def emr_profile():
         flash("Vui lòng đăng nhập để sử dụng chức năng này.", "danger")
         return redirect(url_for("login"))
 
-    filename = None
-    summary_html = None
-    analysis = None
+    summary_html, remarks, corr_b64, filename = None, [], None, None
 
     if request.method == "POST":
         file = request.files.get("file")
@@ -163,19 +147,20 @@ def emr_profile():
             else:
                 df = pd.read_excel(filepath)
 
-            analysis, summary_html = analyze_emr_data(df)
+            summary_html, remarks = df_analysis_summary(df)
+            corr_b64 = create_correlation_plot(df)
 
         except Exception as e:
-            flash(f"Lỗi khi phân tích EMR: {e}", "danger")
+            flash(f"Lỗi khi đọc hoặc phân tích file: {e}", "danger")
 
     return render_template("emr_profile.html",
-                           filename=filename,
-                           analysis=analysis,
-                           summary=summary_html)
-
+                           summary=summary_html,
+                           remarks=remarks,
+                           corr_b64=corr_b64,
+                           filename=filename)
 
 # =============================
-# EMR PREDICTION (phân tích hình ảnh)
+# EMR PREDICTION (phân tích ảnh thật)
 # =============================
 @app.route("/emr_prediction", methods=["GET", "POST"])
 def emr_prediction():
@@ -183,9 +168,7 @@ def emr_prediction():
         flash("Vui lòng đăng nhập để sử dụng chức năng này.", "danger")
         return redirect(url_for("login"))
 
-    filename = None
-    image_b64 = None
-    prediction = None
+    filename, image_b64, prediction = None, None, None
 
     if request.method == "POST":
         file = request.files.get("file")
@@ -201,12 +184,11 @@ def emr_prediction():
         filepath = os.path.join(app.config["UPLOAD_FOLDER"], filename)
         file.save(filepath)
 
-        # Base64 hiển thị ảnh trong HTML
         with open(filepath, "rb") as f:
             image_b64 = base64.b64encode(f.read()).decode("utf-8")
 
         if model is None:
-            flash("Model chưa được tải thành công!", "danger")
+            flash("❌ Model thật chưa được tải thành công từ Hugging Face!", "danger")
             return render_template("emr_prediction.html", filename=filename, image_b64=image_b64)
 
         try:
@@ -216,13 +198,9 @@ def emr_prediction():
 
             preds = model.predict(arr, verbose=0)
             prob = float(preds[0][0])
-            label = "Ung thư" if prob >= 0.5 else "Lành tính"
+            label = "Ung thư (Nodule)" if prob >= 0.5 else "Không ung thư (Non-nodule)"
 
-            prediction = {
-                "Kết quả": label,
-                "Xác suất": f"{prob*100:.2f}%",
-                "Nhận định": "⚠️ Dấu hiệu nghi ngờ ác tính, cần kiểm tra sâu hơn." if prob >= 0.5 else "✅ Không phát hiện bất thường rõ ràng."
-            }
+            prediction = {"result": label, "probability": round(prob, 4)}
 
         except Exception as e:
             flash(f"Lỗi khi dự đoán ảnh: {e}", "danger")
@@ -232,9 +210,8 @@ def emr_prediction():
                            image_b64=image_b64,
                            prediction=prediction)
 
-
 # =============================
-# Run
+# Run app
 # =============================
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
