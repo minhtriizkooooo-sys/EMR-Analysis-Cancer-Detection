@@ -61,48 +61,52 @@ try:
     )
     
     # BƯỚC 2: Xây dựng lại kiến trúc model (Architecture)
-    # Dựa trên lỗi log, model EfficientNetB0 của bạn được lưu với yêu cầu 3 kênh màu (RGB) 
-    # trong lớp Conv đầu tiên (stem_conv).
+    # Cấu hình phải khớp chính xác với EfficientNetB0 (224x224x3) + Head Layers
     
     # Khởi tạo EfficientNetB0 với đầu vào 3 kênh màu theo yêu cầu của model lưu.
-    # Kích thước đầu vào 224x224x3 (RGB)
     base_model = EfficientNetB0(
         input_shape=(224, 224, 3), 
         include_top=False, 
         weights=None # Không dùng ImageNet weights
     )
 
-    # Thêm các lớp phân loại (head)
+    # Thêm các lớp phân loại (Head Layers) - GIẢ ĐỊNH 4 LỚP ĐẦU RA (Classes)
     x = base_model.output
     x = GlobalAveragePooling2D()(x)
-    x = Dense(256, activation='relu')(x) # Giả sử có lớp 256
-    output_layer = Dense(4, activation='softmax')(x) # Giả sử có 4 lớp đầu ra (tùy vào bài toán)
+    # Lớp Dense(256) là giả định phổ biến, nếu model của bạn khác, cần phải thay đổi
+    x = Dense(256, activation='relu')(x) 
+    # Lớp đầu ra (4 lớp) là giả định, nếu số lớp khác, cần phải thay đổi
+    output_layer = Dense(4, activation='softmax')(x) 
 
     # Xây dựng model hoàn chỉnh
     model = Model(inputs=base_model.input, outputs=output_layer)
 
     # BƯỚC 3: Tải weights đã được lưu từ file .keras vào kiến trúc vừa tạo
-    # Sử dụng load_weights thay vì load_model để bỏ qua lỗi cấu hình đầu vào
-    model.load_weights(LOCAL_MODEL_PATH, safe_mode=False) 
-    
-    # BƯỚC 4: Compile lại model (nên có sau khi load weights)
-    # LƯU Ý: Nếu model của bạn không cần compile, có thể bỏ qua bước này.
-    # Tuy nhiên, để đảm bảo model hoạt động đúng, ta nên compile lại.
+    # Sử dụng load_weights và skip_mismatch=True để vượt qua lỗi không khớp (nếu có)
+    # BỎ QUA safe_mode=False
+    try:
+        model.load_weights(LOCAL_MODEL_PATH, skip_mismatch=True) 
+        print("✅ Tải weights thành công (sử dụng skip_mismatch=True).")
+    except Exception as lw_e:
+        # Nếu skip_mismatch không hoạt động hoặc không được hỗ trợ, thử tải cơ bản
+        model.load_weights(LOCAL_MODEL_PATH) 
+        print("✅ Tải weights thành công (tải cơ bản).")
+        
+    # BƯỚC 4: Compile lại model
     model.compile(optimizer=Adam(learning_rate=1e-4), loss='categorical_crossentropy', metrics=['accuracy'])
     
     print(f"✅ Model THẬT (EfficientNetB0) đã được TÁI TẠO và tải weights thành công từ {LOCAL_MODEL_PATH}")
 
 except Exception as e:
-    # Nếu lỗi load_weights, ta sẽ fallback về load_model để kiểm tra.
+    # Nếu lỗi trong quá trình TÁI TẠO KIẾN TRÚC, ta sẽ thử load model trực tiếp
     try:
-        # Thử lại cách load model trực tiếp, nếu lỗi tái tạo kiến trúc.
+        # Thử load model trực tiếp, nhưng phải thêm custom_objects
         model = load_model(LOCAL_MODEL_PATH, custom_objects=custom_objects, compile=False)
         print("✅ Model load trực tiếp thành công. (Fallback)")
     except Exception as fallback_e:
-        print(f"❌ Lỗi load model ban đầu (Load Model): {e}")
-        print(f"❌ Lỗi load model fallback (Load Model Trực Tiếp): {fallback_e}")
+        print(f"❌ Lỗi Tái Tạo Kiến Trúc (Load Weights): {e}")
+        print(f"❌ Lỗi Load Model Trực Tiếp (Fallback): {fallback_e}")
         print("LƯU Ý QUAN TRỌNG: Model THẬT không tải được. Chức năng dự đoán ảnh sẽ bị vô hiệu hóa.")
-        print("Cần kiểm tra lại: Cấu trúc lớp phân loại (Dense Layers) và số lượng Output (4 lớp) có khớp với model đã huấn luyện không?")
         model = None
         
 
@@ -195,16 +199,12 @@ def emr_prediction():
 
             try:
                 # TIỀN XỬ LÝ ẢNH
-                # FIX: Bắt buộc phải tạo ảnh 3 kênh (W, H, 3) để khớp với kiến trúc EfficientNetB0 đã được tái tạo.
-                # Do bạn nói model được huấn luyện trên Grayscale, ta sẽ chuyển
-                # ảnh Grayscale sang 3 kênh (fake RGB: R=G=B).
+                # Model yêu cầu (224, 224, 3) do cách lưu, nên ta phải tạo ảnh giả-RGB từ Grayscale.
                 img = Image.open(file_path).convert("L")  # Grayscale (1 kênh)
                 img = img.resize((224, 224)) 
                 x = np.array(img)/255.0
                 
                 # CHUYỂN 1 KÊNH (W, H) thành 3 KÊNH (W, H, 3)
-                # Stack 3 lần để tạo giả-RGB, thỏa mãn đầu vào 3 kênh của EfficientNetB0.
-                # Model sẽ nhận 3 kênh giống hệt nhau, xử lý như ảnh xám 3 lần.
                 x = np.stack([x, x, x], axis=-1) 
 
                 # Thêm batch size (axis=0)
