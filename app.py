@@ -2,13 +2,17 @@ import os
 import secrets
 import numpy as np
 import pandas as pd
-# Import TensorFlow (cần thiết cho Keras)
+# THAY ĐỔI: Nhập tensorflow để tải model
 import tensorflow as tf
 from flask import Flask, render_template, request, redirect, url_for, session, send_from_directory, flash
 from werkzeug.utils import secure_filename
 from PIL import Image
-# Đảm bảo dùng keras.models.load_model hoặc từ tensorflow.keras.models
+# Đảm bảo dùng keras.models.load_model
 from keras.models import load_model 
+
+# THAY ĐỔI LỚN: Nhập Custom Object cho EfficientNetB0
+from tensorflow.keras.applications import EfficientNetB0 
+
 from huggingface_hub import hf_hub_download
 
 # =============================
@@ -32,14 +36,23 @@ model = None
 try:
     print("⏳ Tải model từ Hugging Face...")
     LOCAL_MODEL_PATH = hf_hub_download(repo_id=HF_MODEL_REPO, filename=HF_MODEL_FILE, cache_dir=MODEL_CACHE)
-    # NOTE QUAN TRỌNG: Lỗi Shape Mismatch (expected 3 channels, received 1) thường xảy ra tại đây.
-    # Lỗi này cần được khắc phục bằng cách thay đổi cách lưu/định nghĩa model của bạn, 
-    # nhưng ít nhất ứng dụng sẽ chạy được Flask routing.
-    model = load_model(LOCAL_MODEL_PATH)
-    print(f"✅ Model đã tải xong và lưu tại {LOCAL_MODEL_PATH}")
+    
+    # SỬ DỤNG custom_objects CHỈ cho EfficientNetB0
+    custom_objects = {
+        'EfficientNetB0': EfficientNetB0,
+        # Nếu mô hình có các lớp custom khác (ví dụ: một hàm loss custom), bạn phải thêm vào đây.
+    }
+    
+    # Cố gắng tải model THẬT
+    model = load_model(LOCAL_MODEL_PATH, custom_objects=custom_objects)
+    print(f"✅ Model THẬT (EfficientNetB0) đã tải xong và lưu tại {LOCAL_MODEL_PATH}")
+
 except Exception as e:
+    # LOẠI BỎ MÔ HÌNH GIẢ LẬP. Nếu lỗi, model = None
     print(f"❌ Lỗi load model: {e}")
-    print("LƯU Ý: Lỗi này thường liên quan đến sự không tương thích giữa cách model được lưu và môi trường TensorFlow hiện tại.")
+    print("LƯU Ý QUAN TRỌNG: Model THẬT không tải được. Chức năng dự đoán ảnh sẽ bị vô hiệu hóa.")
+    print("Vui lòng kiểm tra lại: 1. Model có sử dụng các Custom Object ngoài EfficientNetB0 không? 2. Lỗi Input Shape (3 kênh RGB).")
+
 
 # =============================
 # Dummy user
@@ -47,11 +60,8 @@ except Exception as e:
 USERS = {"user_demo": "Test@123456"}
 
 # =============================
-# Routes
+# Routes (Đã sửa lỗi Routing)
 # =============================
-# FIX: Đổi tên hàm từ 'index' thành 'login' để Flask tạo ra endpoint 'login'.
-# Điều này khớp với url_for('login') mà template index.html đang tìm kiếm,
-# khắc phục lỗi BuildError: Could not build url for endpoint 'login'.
 @app.route("/", methods=["GET", "POST"])
 def login():
     if "user" in session:
@@ -69,7 +79,6 @@ def login():
 
 @app.route("/dashboard")
 def dashboard():
-    # Cập nhật url_for('index') thành url_for('login')
     if "user" not in session:
         return redirect(url_for("login"))
     return render_template("dashboard.html")
@@ -77,7 +86,6 @@ def dashboard():
 @app.route("/logout")
 def logout():
     session.pop("user", None)
-    # Cập nhật url_for('index') thành url_for('login')
     return redirect(url_for("login"))
 
 # =============================
@@ -85,7 +93,6 @@ def logout():
 # =============================
 @app.route("/emr_profile", methods=["GET", "POST"])
 def emr_profile():
-    # Cập nhật url_for('index') thành url_for('login')
     if "user" not in session:
         return redirect(url_for("login"))
     
@@ -101,10 +108,15 @@ def emr_profile():
 
             # Xử lý dữ liệu EMR
             try:
-                if filename.endswith(".csv"):
+                # Kiểm tra định dạng file và đọc
+                if filename.lower().endswith(".csv"):
                     df = pd.read_csv(file_path)
-                else:
+                elif filename.lower().endswith((".xlsx", ".xls")):
                     df = pd.read_excel(file_path)
+                else:
+                    flash("Định dạng file không được hỗ trợ. Vui lòng tải lên CSV hoặc Excel.", "danger")
+                    return render_template("emr_profile.html")
+                    
                 summary = df.describe().to_html(classes="table-auto w-full")
             except Exception as e:
                 flash(f"Lỗi khi đọc file: {e}", "danger")
@@ -115,7 +127,6 @@ def emr_profile():
 # =============================
 @app.route("/emr_prediction", methods=["GET", "POST"])
 def emr_prediction():
-    # Cập nhật url_for('index') thành url_for('login')
     if "user" not in session:
         return redirect(url_for("login"))
 
@@ -124,30 +135,38 @@ def emr_prediction():
 
     if request.method == "POST":
         file = request.files.get("file")
-        if file and model:
+        # Chỉ chạy dự đoán khi file có VÀ model đã được tải thành công (model is NOT None)
+        if file and model: 
             filename = secure_filename(file.filename)
             file_path = os.path.join(UPLOAD_FOLDER, filename)
             file.save(file_path)
 
             try:
-                # Mở ảnh, convert RGB (3 kênh), resize, normalize
+                # TIỀN XỬ LÝ ẢNH
+                # Đảm bảo output là (224, 224, 3) (RGB) để khớp với EfficientNetB0
                 img = Image.open(file_path).convert("RGB")
-                img = img.resize((224, 224))  # tùy theo input model
+                img = img.resize((224, 224)) 
                 x = np.array(img)/255.0
                 x = np.expand_dims(x, axis=0)
 
+                # KIỂM TRA ĐẦU VÀO ĐỂ DEBUG
+                print(f"Input shape cho model: {x.shape}")
+                
                 pred = model.predict(x)
-                prediction = str(pred[0])  # hiển thị dạng chuỗi
+                
+                # Chuyển kết quả dự đoán thành chuỗi
+                prediction_value = np.argmax(pred[0])
+                prediction = f"Kết quả dự đoán: Lớp {prediction_value} | Probabilities: {pred[0]}" 
             except Exception as e:
                 flash(f"Lỗi khi dự đoán: {e}", "danger")
         elif not model:
-            flash("Model chưa load được! (Lỗi khởi tạo)", "danger")
+            # Thông báo lỗi rõ ràng nếu model không load được
+            flash("Model chưa load được! (Lỗi khởi tạo - vui lòng kiểm tra log tải model)", "danger")
     return render_template("emr_prediction.html", filename=filename, prediction=prediction)
 
 # =============================
 # Chạy Flask
 # =============================
 if __name__ == "__main__":
-    # Đảm bảo dùng host 0.0.0.0 và PORT 
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port, debug=True)
