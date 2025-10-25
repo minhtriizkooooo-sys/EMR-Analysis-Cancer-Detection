@@ -1,23 +1,20 @@
 import os
 import secrets
 import numpy as np
-import pandas as pd
-from flask import Flask, render_template, request, redirect, url_for, session, flash
+from flask import Flask, render_template, request, redirect, url_for, session
 from werkzeug.utils import secure_filename
 from PIL import Image
-import base64
-
 import tensorflow as tf
-from tensorflow.keras.models import Model
-from tensorflow.keras.layers import Dense, GlobalAveragePooling2D
+from tensorflow.keras.models import load_model
 from tensorflow.keras.applications import EfficientNetB0
+from tensorflow.keras.layers import Dense, GlobalAveragePooling2D
+from tensorflow.keras.models import Model
 from tensorflow.keras.optimizers import Adam
-
 from huggingface_hub import hf_hub_download
 
-# =============================
+# ==============================
 # Cấu hình Flask
-# =============================
+# ==============================
 app = Flask(__name__)
 app.secret_key = secrets.token_hex(16)
 UPLOAD_FOLDER = "uploads"
@@ -25,19 +22,16 @@ os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 MODEL_CACHE = "model_cache"
 os.makedirs(MODEL_CACHE, exist_ok=True)
 
-# =============================
+# ==============================
 # Model config
-# =============================
+# ==============================
 HF_MODEL_REPO = "minhtriizkooooo/EMR-Analysis-Cancer_Detection"
 HF_MODEL_FILE = "best_weights_model.keras"
 HF_TOKEN = os.environ.get("HF_TOKEN")
-NUM_CLASSES = 128
-CLASSES = [f"Lớp Bệnh #{i+1}" for i in range(NUM_CLASSES)]
-
+NUM_CLASSES = 1  # nhị phân
 model = None
 
 def load_model_once():
-    """Load EfficientNetB0 model lazy, chỉ 1 lần"""
     global model
     if model is not None:
         return model
@@ -50,7 +44,7 @@ def load_model_once():
             token=HF_TOKEN
         )
 
-        # ===== EfficientNetB0 =====
+        # Build EfficientNetB0 nhị phân
         base_model = EfficientNetB0(
             input_shape=(224, 224, 3),
             include_top=False,
@@ -60,26 +54,26 @@ def load_model_once():
         x = GlobalAveragePooling2D()(x)
         x = Dense(1024, activation='relu')(x)
         x = Dense(512, activation='relu')(x)
-        output_layer = Dense(NUM_CLASSES, activation='softmax')(x)
+        output_layer = Dense(1, activation='sigmoid')(x)  # nhị phân
 
         model = Model(inputs=base_model.input, outputs=output_layer)
         model.load_weights(LOCAL_MODEL_PATH, skip_mismatch=True)
-        model.compile(optimizer=Adam(1e-4), loss='categorical_crossentropy', metrics=['accuracy'])
-        print(f"✅ Model EfficientNetB0 + Top layers đã load thành công")
+        model.compile(optimizer=Adam(1e-4), loss='binary_crossentropy', metrics=['accuracy'])
+        print("✅ Model nhị phân đã load thành công")
         return model
     except Exception as e:
         print(f"❌ Lỗi load model: {e}")
         model = None
         return None
 
-# =============================
+# ==============================
 # Dummy user
-# =============================
+# ==============================
 USERS = {"user_demo": "Test@123456"}
 
-# =============================
+# ==============================
 # Routes
-# =============================
+# ==============================
 @app.route("/", methods=["GET", "POST"])
 def login():
     if "user" in session:
@@ -89,10 +83,7 @@ def login():
         password = request.form.get("password")
         if userID in USERS and USERS[userID] == password:
             session["user"] = userID
-            # Đã bỏ flash success
             return redirect(url_for("dashboard"))
-        else:
-            flash("Sai ID hoặc mật khẩu", "danger")
     return render_template("index.html")
 
 @app.route("/dashboard")
@@ -120,18 +111,18 @@ def emr_profile():
             file.save(file_path)
             try:
                 if filename.lower().endswith(".csv"):
+                    import pandas as pd
                     df = pd.read_csv(file_path)
                 elif filename.lower().endswith((".xlsx", ".xls")):
+                    import pandas as pd
                     df = pd.read_excel(file_path)
                 else:
-                    flash("Định dạng file không được hỗ trợ.", "danger")
-                    return render_template("emr_profile.html")
-                
-                # Phân tích chuyên nghiệp hơn
-                summary_df = df.describe(include='all').transpose()
-                summary = summary_df.to_html(classes="table-auto w-full", escape=False)
+                    summary = "Định dạng file không được hỗ trợ."
+                    return render_template("emr_profile.html", filename=filename, summary=summary)
+                # Phân tích chuyên nghiệp hơn: mô tả cơ bản
+                summary = df.describe().to_html(classes="table-auto w-full")
             except Exception as e:
-                flash(f"Lỗi khi đọc file: {e}", "danger")
+                summary = f"Lỗi khi đọc file: {e}"
     return render_template("emr_profile.html", filename=filename, summary=summary)
 
 @app.route("/emr_prediction", methods=["GET", "POST"])
@@ -139,8 +130,7 @@ def emr_prediction():
     if "user" not in session:
         return redirect(url_for("login"))
     filename = None
-    prediction = None
-    image_b64 = None
+    prediction_result = None
 
     if request.method == "POST":
         file = request.files.get("file")
@@ -148,10 +138,6 @@ def emr_prediction():
             filename = secure_filename(file.filename)
             file_path = os.path.join(UPLOAD_FOLDER, filename)
             file.save(file_path)
-
-            # Chuyển ảnh sang Base64 để hiển thị
-            with open(file_path, "rb") as f:
-                image_b64 = base64.b64encode(f.read()).decode("utf-8")
 
             mdl = load_model_once()
             if mdl:
@@ -161,30 +147,26 @@ def emr_prediction():
                     x = np.array(img)/255.0
                     x = np.expand_dims(x, axis=0)
 
-                    pred = mdl.predict(x)
-                    prediction_value = np.argmax(pred[0])
-                    predicted_class = CLASSES[prediction_value] if prediction_value < NUM_CLASSES else f"Lớp {prediction_value+1}"
+                    pred = mdl.predict(x)[0][0]  # nhị phân
+                    if pred >= 0.5:
+                        result = "Nodule"
+                        probability = pred
+                    else:
+                        result = "Non-nodule"
+                        probability = 1 - pred
 
-                    top_5_indices = np.argsort(pred[0])[-5:][::-1]
-                    top_5_probs = pred[0][top_5_indices]
-                    top_5_results = [f"{CLASSES[i]}: {top_5_probs[idx]*100:.2f}%" for idx, i in enumerate(top_5_indices)]
-
-                    prediction = {
-                        "result": predicted_class,
-                        "top5": top_5_results,
-                        "probability": float(pred[0][prediction_value])
-                    }
+                    prediction_result = {"result": result, "probability": probability}
 
                 except Exception as e:
-                    flash(f"Lỗi khi dự đoán: {e}", "danger")
+                    prediction_result = {"result": f"Lỗi khi dự đoán: {e}", "probability": 0}
             else:
-                flash("Model chưa load được!", "danger")
+                prediction_result = {"result": "Model chưa load được!", "probability": 0}
 
-    return render_template("emr_prediction.html", filename=filename, prediction=prediction, image_b64=image_b64)
+    return render_template("emr_prediction.html", filename=filename, prediction=prediction_result)
 
-# =============================
+# ==============================
 # Run Flask
-# =============================
+# ==============================
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
