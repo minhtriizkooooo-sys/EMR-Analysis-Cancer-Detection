@@ -6,7 +6,6 @@ from flask import Flask, render_template, request, redirect, url_for, session, f
 from werkzeug.utils import secure_filename
 from PIL import Image
 import base64
-from io import BytesIO
 
 import tensorflow as tf
 from tensorflow.keras.models import Model
@@ -90,6 +89,7 @@ def login():
         password = request.form.get("password")
         if userID in USERS and USERS[userID] == password:
             session["user"] = userID
+            # Đã bỏ flash success
             return redirect(url_for("dashboard"))
         else:
             flash("Sai ID hoặc mật khẩu", "danger")
@@ -126,7 +126,10 @@ def emr_profile():
                 else:
                     flash("Định dạng file không được hỗ trợ.", "danger")
                     return render_template("emr_profile.html")
-                summary = df.describe().to_html(classes="table-auto w-full")
+                
+                # Phân tích chuyên nghiệp hơn
+                summary_df = df.describe(include='all').transpose()
+                summary = summary_df.to_html(classes="table-auto w-full", escape=False)
             except Exception as e:
                 flash(f"Lỗi khi đọc file: {e}", "danger")
     return render_template("emr_profile.html", filename=filename, summary=summary)
@@ -135,7 +138,6 @@ def emr_profile():
 def emr_prediction():
     if "user" not in session:
         return redirect(url_for("login"))
-
     filename = None
     prediction = None
     image_b64 = None
@@ -147,50 +149,38 @@ def emr_prediction():
             file_path = os.path.join(UPLOAD_FOLDER, filename)
             file.save(file_path)
 
-            # Load model từ HF nếu chưa load
+            # Chuyển ảnh sang Base64 để hiển thị
+            with open(file_path, "rb") as f:
+                image_b64 = base64.b64encode(f.read()).decode("utf-8")
+
             mdl = load_model_once()
             if mdl:
                 try:
-                    # --- Load ảnh RGB ---
                     img = Image.open(file_path).convert("RGB")
                     img = img.resize((224, 224))
                     x = np.array(img)/255.0
                     x = np.expand_dims(x, axis=0)
 
-                    # --- Dự đoán ---
                     pred = mdl.predict(x)
-                    pred_class_index = np.argmax(pred[0])
-                    pred_prob = float(pred[0][pred_class_index])
+                    prediction_value = np.argmax(pred[0])
+                    predicted_class = CLASSES[prediction_value] if prediction_value < NUM_CLASSES else f"Lớp {prediction_value+1}"
 
-                    # --- Map sang Nodule / Non-nodule ---
-                    # TODO: Cập nhật NODULE_CLASSES theo model thật
-                    NODULE_CLASSES = list(range(64))  # ví dụ: 0-63 là Nodule
-                    result_label = "Nodule" if pred_class_index in NODULE_CLASSES else "Non-nodule"
-
-                    # --- Top 5 class ---
                     top_5_indices = np.argsort(pred[0])[-5:][::-1]
                     top_5_probs = pred[0][top_5_indices]
                     top_5_results = [f"{CLASSES[i]}: {top_5_probs[idx]*100:.2f}%" for idx, i in enumerate(top_5_indices)]
 
-                    # --- Chuẩn bị dữ liệu để hiển thị ---
                     prediction = {
-                        "result": result_label,
-                        "probability": pred_prob,
-                        "top_5": top_5_results
+                        "result": predicted_class,
+                        "top5": top_5_results,
+                        "probability": float(pred[0][prediction_value])
                     }
-
-                    # --- Convert ảnh sang base64 ---
-                    buffered = BytesIO()
-                    img.save(buffered, format="JPEG")
-                    image_b64 = base64.b64encode(buffered.getvalue()).decode()
 
                 except Exception as e:
                     flash(f"Lỗi khi dự đoán: {e}", "danger")
             else:
                 flash("Model chưa load được!", "danger")
 
-    return render_template("emr_prediction.html", filename=filename,
-                           prediction=prediction, image_b64=image_b64)
+    return render_template("emr_prediction.html", filename=filename, prediction=prediction, image_b64=image_b64)
 
 # =============================
 # Run Flask
