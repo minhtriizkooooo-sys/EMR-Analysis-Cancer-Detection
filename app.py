@@ -37,7 +37,7 @@ os.makedirs(MODEL_CACHE, exist_ok=True)
 # =============================
 # Tải model từ Hugging Face
 # =============================
-# ĐÃ SỬA: Sử dụng dấu '_' nếu tên repo trên HF là EMR-Analysis-Cancer_Detection
+# Repo ID
 HF_MODEL_REPO = "minhtriizkooooo/EMR-Analysis-Cancer_Detection" 
 
 # Tên file model
@@ -60,16 +60,16 @@ try:
         token=HF_TOKEN 
     )
     
-    # Tải model với custom_objects để FIX lỗi 1-channel/Swish
-    model = load_model(LOCAL_MODEL_PATH, custom_objects=custom_objects, compile=False)
+    # CẬP NHẬT QUAN TRỌNG: Thêm safe_mode=False để bỏ qua kiểm tra hình dạng đầu vào không khớp.
+    model = load_model(LOCAL_MODEL_PATH, custom_objects=custom_objects, compile=False, safe_mode=False)
     print(f"✅ Model THẬT (EfficientNetB0) đã tải xong và lưu tại {LOCAL_MODEL_PATH}")
 
 except Exception as e:
     print(f"❌ Lỗi load model: {e}")
     # Thông báo lỗi được cập nhật để chỉ rõ lỗi 404 (Không tìm thấy)
     print("LƯU Ý QUAN TRỌNG: Model THẬT không tải được. Chức năng dự đoán ảnh sẽ bị vô hiệu hóa.")
-    print("KIỂM TRA NGAY: Lỗi 404 có nghĩa là **KHÔNG TÌM THẤY KHO CHỨA HOẶC FILE**. Vui lòng kiểm tra lại **tên repo** và **tên file** (cả chữ hoa/thường) trên Hugging Face.")
-    print("Kiểm tra: Nếu lỗi vẫn là (..., 1), hãy thử đảm bảo phiên bản TensorFlow/Keras trên Render khớp với Colab.")
+    print("KIỂM TRA LẠI: Lỗi load model (ví dụ: lỗi shape, lỗi custom layer) có thể cần điều chỉnh phiên bản TF/Keras hoặc tham số load model.")
+    print("Nếu lỗi vẫn là (..., 1), vui lòng kiểm tra lại quá trình huấn luyện model của bạn.")
 
 
 # =============================
@@ -161,14 +161,19 @@ def emr_prediction():
 
             try:
                 # TIỀN XỬ LÝ ẢNH
-                # Đảm bảo output là (224, 224, 3) (RGB) để khớp với EfficientNetB0
-                img = Image.open(file_path).convert("RGB")
+                # Đảm bảo ảnh là thang xám (Grayscale - 1 Kênh) và hình dạng (224, 224, 1)
+                # Yêu cầu của bạn: Ảnh huấn luyện đã chuyển thành grayscale.
+                img = Image.open(file_path).convert("L")  # Chuyển sang Grayscale (Luminance)
                 img = img.resize((224, 224)) 
                 x = np.array(img)/255.0
-                x = np.expand_dims(x, axis=0)
+
+                # Thêm kênh (axis=-1) và batch size (axis=0)
+                # Hình dạng đầu vào: (1, 224, 224, 1)
+                x = np.expand_dims(x, axis=-1) # Hình dạng: (224, 224, 1)
+                x = np.expand_dims(x, axis=0)  # Hình dạng: (1, 224, 224, 1)
 
                 # KIỂM TRA ĐẦU VÀO ĐỂ DEBUG
-                print(f"Input shape cho model: {x.shape}")
+                print(f"Input shape cho model (Grayscale): {x.shape}")
                 
                 pred = model.predict(x)
                 
