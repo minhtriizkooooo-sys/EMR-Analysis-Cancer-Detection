@@ -27,7 +27,7 @@ os.makedirs(MODEL_CACHE, exist_ok=True)
 # ==============================
 HF_MODEL_REPO = "minhtriizkooooo/EMR-Analysis-Cancer_Detection"
 HF_MODEL_FILE = "best_weights_model.keras"
-HF_TOKEN = os.environ.get("HF_TOKEN")  # đã có HF token thật
+HF_TOKEN = os.environ.get("HF_TOKEN")  # token thật
 NUM_CLASSES = 1  # nhị phân
 model = None
 model_lock = threading.Lock()
@@ -101,12 +101,17 @@ def logout():
     session.pop("user", None)
     return redirect(url_for("login"))
 
+# ==============================
+# EMR Profile - phân tích chuyên nghiệp
+# ==============================
 @app.route("/emr_profile", methods=["GET", "POST"])
 def emr_profile():
     if "user" not in session:
         return redirect(url_for("login"))
     filename = None
     summary = None
+    analysis_text = None
+
     if request.method == "POST":
         file = request.files.get("file")
         if file:
@@ -122,11 +127,51 @@ def emr_profile():
                 else:
                     summary = "Định dạng file không được hỗ trợ."
                     return render_template("emr_profile.html", filename=filename, summary=summary)
-                summary = df.describe().to_html(classes="table-auto w-full")
+
+                # -------------------------------
+                # Thống kê cơ bản
+                # -------------------------------
+                summary = df.describe(include='all').to_html(classes="table-auto w-full")
+
+                # -------------------------------
+                # Phân tích chuyên sâu
+                # -------------------------------
+                analysis = []
+
+                if 'Age' in df.columns:
+                    mean_age = df['Age'].mean()
+                    analysis.append(f"Tuổi trung bình của bệnh nhân: {mean_age:.1f} tuổi.")
+
+                if 'Blood_Pressure' in df.columns:
+                    high_bp = df[df['Blood_Pressure'] > 140].shape[0]
+                    analysis.append(f"Số bệnh nhân huyết áp cao (>140): {high_bp} người.")
+
+                if 'Cholesterol' in df.columns:
+                    high_chol = df[df['Cholesterol'] > 200].shape[0]
+                    analysis.append(f"Số bệnh nhân cholesterol cao (>200): {high_chol} người.")
+
+                if 'Glucose' in df.columns:
+                    high_glucose = df[df['Glucose'] > 125].shape[0]
+                    analysis.append(f"Số bệnh nhân glucose cao (>125): {high_glucose} người.")
+
+                if 'Diagnosis' in df.columns:
+                    diag_counts = df['Diagnosis'].value_counts().to_dict()
+                    diag_text = ", ".join([f"{k}: {v}" for k, v in diag_counts.items()])
+                    analysis.append(f"Phân bố chẩn đoán: {diag_text}")
+
+                analysis_text = "<br>".join(analysis)
+
             except Exception as e:
                 summary = f"Lỗi khi đọc file: {e}"
-    return render_template("emr_profile.html", filename=filename, summary=summary)
 
+    return render_template("emr_profile.html",
+                           filename=filename,
+                           summary=summary,
+                           analysis_text=analysis_text)
+
+# ==============================
+# EMR Prediction - dự đoán nodule thật
+# ==============================
 @app.route("/emr_prediction", methods=["GET", "POST"])
 def emr_prediction():
     if "user" not in session:
@@ -149,15 +194,11 @@ def emr_prediction():
                     x = np.array(img, dtype=np.float32)/255.0
                     x = np.expand_dims(x, axis=0)
 
+                    # Dùng kết quả thật từ model
                     pred = mdl.predict(x, verbose=0)[0][0]
-                    if pred >= 0.5:
-                        result = "Nodule"
-                        probability = float(pred)
-                    else:
-                        result = "Non-nodule"
-                        probability = float(1 - pred)
-
-                    prediction_result = {"result": result, "probability": round(probability, 4)}
+                    binary_prediction = np.round(pred)
+                    prediction_result = {"result": "Nodule" if binary_prediction==1 else "Non-nodule",
+                                         "probability": float(pred)}
 
                 except Exception as e:
                     prediction_result = {"result": f"Lỗi khi dự đoán: {e}", "probability": 0}
