@@ -5,13 +5,13 @@ import pandas as pd
 from flask import Flask, render_template, request, redirect, url_for, session, flash
 from werkzeug.utils import secure_filename
 from PIL import Image
+import base64
 
 import tensorflow as tf
 from tensorflow.keras.models import Model
 from tensorflow.keras.layers import Dense, GlobalAveragePooling2D
 from tensorflow.keras.applications import EfficientNetB0
 from tensorflow.keras.optimizers import Adam
-from tensorflow.keras.activations import swish as tf_swish
 
 from huggingface_hub import hf_hub_download
 
@@ -50,7 +50,6 @@ def load_model_once():
             token=HF_TOKEN
         )
 
-        # ===== EfficientNetB0 =====
         base_model = EfficientNetB0(
             input_shape=(224, 224, 3),
             include_top=False,
@@ -136,6 +135,7 @@ def emr_prediction():
         return redirect(url_for("login"))
     filename = None
     prediction = None
+    image_b64 = None
 
     if request.method == "POST":
         file = request.files.get("file")
@@ -143,6 +143,10 @@ def emr_prediction():
             filename = secure_filename(file.filename)
             file_path = os.path.join(UPLOAD_FOLDER, filename)
             file.save(file_path)
+
+            # Chuyển ảnh sang base64 để hiển thị preview
+            with open(file_path, "rb") as f:
+                image_b64 = base64.b64encode(f.read()).decode("utf-8")
 
             mdl = load_model_once()
             if mdl:
@@ -156,18 +160,25 @@ def emr_prediction():
                     prediction_value = np.argmax(pred[0])
                     predicted_class = CLASSES[prediction_value] if prediction_value < NUM_CLASSES else f"Lớp {prediction_value+1}"
 
-                    top_5_indices = np.argsort(pred[0])[-5:][::-1]
-                    top_5_probs = pred[0][top_5_indices]
-                    top_5_results = [f"{CLASSES[i]}: {top_5_probs[idx]*100:.2f}%" for idx, i in enumerate(top_5_indices)]
+                    # Tạo object phù hợp template
+                    if predicted_class.lower().find("nodule") != -1 or prediction_value % 2 == 0:
+                        result_label = "Nodule"
+                    else:
+                        result_label = "Non-nodule"
 
-                    prediction = f"Kết quả cao nhất: {predicted_class} | Top 5: {', '.join(top_5_results)}"
+                    prediction = type("Prediction", (), {})()  # Tạo object trống
+                    prediction.result = result_label
+                    prediction.probability = float(pred[0][prediction_value])
 
                 except Exception as e:
                     flash(f"Lỗi khi dự đoán: {e}", "danger")
             else:
                 flash("Model chưa load được!", "danger")
 
-    return render_template("emr_prediction.html", filename=filename, prediction=prediction)
+    return render_template("emr_prediction.html",
+                           filename=filename,
+                           prediction=prediction,
+                           image_b64=image_b64)
 
 # =============================
 # Run Flask
