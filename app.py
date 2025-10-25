@@ -1,7 +1,8 @@
 import os
 import secrets
+import threading
 import numpy as np
-from flask import Flask, render_template, request, redirect, url_for, session
+from flask import Flask, render_template, request, redirect, url_for, session, send_from_directory
 from werkzeug.utils import secure_filename
 from PIL import Image
 import tensorflow as tf
@@ -10,10 +11,13 @@ from tensorflow.keras.layers import Dense, GlobalAveragePooling2D
 from tensorflow.keras.applications import EfficientNetB0
 from tensorflow.keras.optimizers import Adam
 from huggingface_hub import hf_hub_download
-import threading
+import pandas as pd
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
 
 # ==============================
-# Cấu hình Flask
+# Flask config
 # ==============================
 app = Flask(__name__)
 app.secret_key = secrets.token_hex(16)
@@ -21,13 +25,15 @@ UPLOAD_FOLDER = "uploads"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 MODEL_CACHE = "model_cache"
 os.makedirs(MODEL_CACHE, exist_ok=True)
+CHART_FOLDER = "static/charts"
+os.makedirs(CHART_FOLDER, exist_ok=True)
 
 # ==============================
 # Model config
 # ==============================
 HF_MODEL_REPO = "minhtriizkooooo/EMR-Analysis-Cancer_Detection"
 HF_MODEL_FILE = "best_weights_model.keras"
-HF_TOKEN = os.environ.get("HF_TOKEN")  # token thật
+HF_TOKEN = os.environ.get("HF_TOKEN")
 NUM_CLASSES = 1  # nhị phân
 model = None
 model_lock = threading.Lock()
@@ -46,12 +52,7 @@ def load_model_once():
                 token=HF_TOKEN
             )
 
-            # Build EfficientNetB0 nhị phân
-            base_model = EfficientNetB0(
-                input_shape=(224, 224, 3),
-                include_top=False,
-                weights=None
-            )
+            base_model = EfficientNetB0(input_shape=(224, 224, 3), include_top=False, weights=None)
             x = base_model.output
             x = GlobalAveragePooling2D()(x)
             x = Dense(1024, activation='relu')(x)
@@ -102,15 +103,16 @@ def logout():
     return redirect(url_for("login"))
 
 # ==============================
-# EMR Profile - phân tích chuyên nghiệp
+# EMR Profile - chuyên nghiệp
 # ==============================
 @app.route("/emr_profile", methods=["GET", "POST"])
 def emr_profile():
     if "user" not in session:
         return redirect(url_for("login"))
+
     filename = None
-    summary = None
-    analysis_text = None
+    summary_html = None
+    chart_urls = []
 
     if request.method == "POST":
         file = request.files.get("file")
@@ -119,63 +121,52 @@ def emr_profile():
             file_path = os.path.join(UPLOAD_FOLDER, filename)
             file.save(file_path)
             try:
-                import pandas as pd
                 if filename.lower().endswith(".csv"):
                     df = pd.read_csv(file_path, encoding='utf-8', engine='python')
                 elif filename.lower().endswith((".xlsx", ".xls")):
                     df = pd.read_excel(file_path)
                 else:
-                    summary = "Định dạng file không được hỗ trợ."
-                    return render_template("emr_profile.html", filename=filename, summary=summary)
+                    summary_html = "<p>Định dạng file không được hỗ trợ.</p>"
+                    return render_template("emr_profile.html", filename=filename, summary_html=summary_html)
 
-                # -------------------------------
-                # Thống kê cơ bản
-                # -------------------------------
-                summary = df.describe(include='all').to_html(classes="table-auto w-full")
+                # Thống kê tổng quan
+                summary = df.describe(include='all').transpose()
+                summary_html = summary.to_html(classes="table-auto w-full")
 
-                # -------------------------------
-                # Phân tích chuyên sâu
-                # -------------------------------
-                analysis = []
+                # Vẽ biểu đồ cho các cột số và các cột quan trọng nếu có
+                numeric_cols = df.select_dtypes(include=np.number).columns.tolist()
+                for col in numeric_cols:
+                    plt.figure()
+                    df[col].hist(bins=20, color='skyblue')
+                    plt.title(f"Phân bố {col}")
+                    chart_file = os.path.join(CHART_FOLDER, f"{col}_{filename}.png")
+                    plt.savefig(chart_file)
+                    plt.close()
+                    chart_urls.append(url_for('static', filename=f"charts/{col}_{filename}.png"))
 
-                if 'Age' in df.columns:
-                    mean_age = df['Age'].mean()
-                    analysis.append(f"Tuổi trung bình của bệnh nhân: {mean_age:.1f} tuổi.")
-
-                if 'Blood_Pressure' in df.columns:
-                    high_bp = df[df['Blood_Pressure'] > 140].shape[0]
-                    analysis.append(f"Số bệnh nhân huyết áp cao (>140): {high_bp} người.")
-
-                if 'Cholesterol' in df.columns:
-                    high_chol = df[df['Cholesterol'] > 200].shape[0]
-                    analysis.append(f"Số bệnh nhân cholesterol cao (>200): {high_chol} người.")
-
-                if 'Glucose' in df.columns:
-                    high_glucose = df[df['Glucose'] > 125].shape[0]
-                    analysis.append(f"Số bệnh nhân glucose cao (>125): {high_glucose} người.")
-
-                if 'Diagnosis' in df.columns:
-                    diag_counts = df['Diagnosis'].value_counts().to_dict()
-                    diag_text = ", ".join([f"{k}: {v}" for k, v in diag_counts.items()])
-                    analysis.append(f"Phân bố chẩn đoán: {diag_text}")
-
-                analysis_text = "<br>".join(analysis)
+                # Vẽ biểu đồ cho cột Gender nếu có
+                if 'Gender' in df.columns:
+                    plt.figure()
+                    df['Gender'].value_counts().plot(kind='bar', color=['skyblue','salmon'])
+                    plt.title("Phân bố giới tính")
+                    gender_chart = os.path.join(CHART_FOLDER, f"Gender_{filename}.png")
+                    plt.savefig(gender_chart)
+                    plt.close()
+                    chart_urls.append(url_for('static', filename=f"charts/Gender_{filename}.png"))
 
             except Exception as e:
-                summary = f"Lỗi khi đọc file: {e}"
+                summary_html = f"<p>Lỗi khi đọc file: {e}</p>"
 
-    return render_template("emr_profile.html",
-                           filename=filename,
-                           summary=summary,
-                           analysis_text=analysis_text)
+    return render_template("emr_profile.html", filename=filename, summary_html=summary_html, chart_urls=chart_urls)
 
 # ==============================
-# EMR Prediction - dự đoán nodule thật
+# EMR Prediction
 # ==============================
 @app.route("/emr_prediction", methods=["GET", "POST"])
 def emr_prediction():
     if "user" not in session:
         return redirect(url_for("login"))
+
     filename = None
     prediction_result = None
 
@@ -186,6 +177,8 @@ def emr_prediction():
             file_path = os.path.join(UPLOAD_FOLDER, filename)
             file.save(file_path)
 
+            uploaded_image_url = url_for('uploaded_file', filename=filename)
+
             mdl = load_model_once()
             if mdl:
                 try:
@@ -194,18 +187,34 @@ def emr_prediction():
                     x = np.array(img, dtype=np.float32)/255.0
                     x = np.expand_dims(x, axis=0)
 
-                    # Dùng kết quả thật từ model
                     pred = mdl.predict(x, verbose=0)[0][0]
-                    binary_prediction = np.round(pred)
-                    prediction_result = {"result": "Nodule" if binary_prediction==1 else "Non-nodule",
-                                         "probability": float(pred)}
+                    result = "Nodule" if pred >= 0.5 else "Non-nodule"
+                    probability = float(pred if pred >= 0.5 else 1 - pred)
+
+                    prediction_result = {
+                        "result": result,
+                        "probability": round(probability, 4),
+                        "image_url": uploaded_image_url
+                    }
 
                 except Exception as e:
-                    prediction_result = {"result": f"Lỗi khi dự đoán: {e}", "probability": 0}
+                    prediction_result = {
+                        "result": f"Lỗi khi dự đoán: {e}",
+                        "probability": 0,
+                        "image_url": uploaded_image_url
+                    }
             else:
-                prediction_result = {"result": "Model chưa load được!", "probability": 0}
+                prediction_result = {
+                    "result": "Model chưa load được!",
+                    "probability": 0,
+                    "image_url": uploaded_image_url
+                }
 
-    return render_template("emr_prediction.html", filename=filename, prediction=prediction_result)
+    return render_template("emr_prediction.html", prediction=prediction_result)
+
+@app.route('/uploads/<filename>')
+def uploaded_file(filename):
+    return send_from_directory(UPLOAD_FOLDER, filename)
 
 # ==============================
 # Run Flask
