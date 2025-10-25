@@ -1,199 +1,101 @@
-from flask import Flask, render_template, request, redirect, url_for, session, flash
+from flask import Flask, render_template, request, redirect, url_for
 import os
-import secrets
-import requests
 import numpy as np
-import pandas as pd
-from keras.models import load_model
+import tensorflow as tf
+from tensorflow.keras.models import load_model
 from PIL import Image
+import io
+import requests
+from huggingface_hub import hf_hub_download
 
 # =============================
 # Cấu hình Flask
 # =============================
 app = Flask(__name__)
-app.secret_key = secrets.token_hex(16)
 
 # =============================
-# Thư mục upload & model
+# Tải model từ Hugging Face
 # =============================
-UPLOAD_FOLDER = "static/uploads"
-MODEL_DIR = "model"
-MODEL_FILE = "best_weights_model.keras"
-MODEL_PATH = os.path.join(MODEL_DIR, MODEL_FILE)
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-os.makedirs(MODEL_DIR, exist_ok=True)
+MODEL_REPO = "minhtriizkooooo/EMR-Analysis-Cancer_Detection"
+MODEL_FILENAME = "best_weights_model.keras"
 
-# =============================
-# Link model trên Hugging Face
-# =============================
-MODEL_URL = (
-    "https://huggingface.co/minhtriizkooooo/EMR-Analysis-Cancer_Detection/"
-    "resolve/main/best_weights_model.keras"
-)
-
-# =============================
-# Tải model nếu chưa có
-# =============================
-if not os.path.exists(MODEL_PATH):
-    print("🔽 Đang tải model từ Hugging Face...")
-    try:
-        r = requests.get(MODEL_URL, stream=True)
-        r.raise_for_status()
-        with open(MODEL_PATH, "wb") as f:
-            for chunk in r.iter_content(chunk_size=8192):
-                f.write(chunk)
-        print("✅ Tải model thành công.")
-    except Exception as e:
-        print(f"❌ Lỗi khi tải model: {e}")
-
-# =============================
-# Load model
-# =============================
-model = None
+print("🔽 Đang tải model từ Hugging Face...")
 try:
-    model = load_model(MODEL_PATH)
-    print("✅ Model đã load thành công.")
+    model_path = hf_hub_download(repo_id=MODEL_REPO, filename=MODEL_FILENAME)
+    model = load_model(model_path)
+    print("✅ Tải model thành công.")
 except Exception as e:
     print(f"❌ Không thể load model: {e}")
+    model = None
 
 # =============================
-# Route: Đăng nhập
+# Trang chủ
 # =============================
-@app.route("/", methods=["GET", "POST"])
-def login():
-    if request.method == "POST":
-        user = request.form.get("userID")
-        password = request.form.get("password")
-
-        if user == "user_demo" and password == "Test@123456":
-            session["user"] = user
-            flash("Đăng nhập thành công!", "success")
-            return redirect(url_for("dashboard"))
-        else:
-            flash("Sai ID người dùng hoặc mật khẩu!", "danger")
-            return redirect(url_for("login"))
-    return render_template("index.html")
-
+@app.route('/')
+def index():
+    return render_template('index.html')
 
 # =============================
-# Route: Dashboard
+# Dashboard
 # =============================
-@app.route("/dashboard")
+@app.route('/dashboard')
 def dashboard():
-    if "user" not in session:
-        flash("Vui lòng đăng nhập trước.", "danger")
-        return redirect(url_for("login"))
-    return render_template("dashboard.html")
-
+    return render_template('dashboard.html')
 
 # =============================
-# Route: Phân tích EMR (CSV/Excel)
+# Trang upload & dự đoán ảnh
 # =============================
-@app.route("/emr_profile", methods=["GET", "POST"])
-def emr_profile():
-    if "user" not in session:
-        flash("Vui lòng đăng nhập trước.", "danger")
-        return redirect(url_for("login"))
-
-    summary = None
-    filename = None
-
-    if request.method == "POST":
-        file = request.files.get("file")
-        if not file:
-            flash("Vui lòng chọn file CSV hoặc Excel!", "danger")
-            return redirect(url_for("emr_profile"))
-
-        filename = file.filename
-        path = os.path.join(app.config["UPLOAD_FOLDER"], filename)
-        file.save(path)
-
-        try:
-            if filename.endswith(".csv"):
-                df = pd.read_csv(path)
-            else:
-                df = pd.read_excel(path)
-
-            summary_html = f"""
-            <h3 class='text-xl font-semibold text-primary-green mb-3'>📊 Tổng quan dữ liệu</h3>
-            <p><b>Số dòng:</b> {df.shape[0]} | <b>Số cột:</b> {df.shape[1]}</p>
-            <h4 class='text-lg font-semibold mt-4 mb-2'>Mẫu dữ liệu:</h4>
-            {df.head().to_html(classes='table-auto w-full border border-gray-300 rounded-lg shadow-sm', index=False)}
-            <h4 class='text-lg font-semibold mt-4 mb-2'>Mô tả thống kê:</h4>
-            {df.describe().to_html(classes='table-auto w-full border border-gray-300 rounded-lg shadow-sm')}
-            """
-            summary = summary_html
-        except Exception as e:
-            flash(f"Lỗi khi đọc file: {e}", "danger")
-
-    return render_template("emr_profile.html", summary=summary, filename=filename)
-
-
-# =============================
-# Route: Dự đoán ảnh y tế (AI)
-# =============================
-@app.route("/emr_prediction", methods=["GET", "POST"])
+@app.route('/emr_prediction', methods=['GET', 'POST'])
 def emr_prediction():
-    if "user" not in session:
-        flash("Vui lòng đăng nhập trước.", "danger")
-        return redirect(url_for("login"))
+    prediction_result = None
+    image_url = None
 
-    result = None
-    image_path = None
+    if request.method == 'POST':
+        if 'file' not in request.files:
+            return render_template('emr_prediction.html', prediction_result="Không có tệp tải lên.")
 
-    if request.method == "POST":
-        if model is None:
-            flash("Model chưa sẵn sàng!", "danger")
-            return redirect(url_for("emr_prediction"))
-
-        file = request.files.get("file")
-        if not file:
-            flash("Vui lòng chọn ảnh để dự đoán!", "danger")
-            return redirect(url_for("emr_prediction"))
+        file = request.files['file']
+        if file.filename == '':
+            return render_template('emr_prediction.html', prediction_result="Chưa chọn ảnh.")
 
         try:
-            filename = file.filename
-            image_path = os.path.join(app.config["UPLOAD_FOLDER"], filename)
-            file.save(image_path)
+            # Đọc ảnh
+            img = Image.open(file.stream)
 
-            # Đọc và xử lý ảnh
-            img = Image.open(image_path)
+            # Nếu ảnh là grayscale → chuyển sang RGB để khớp model
+            if img.mode != 'RGB':
+                img = img.convert('RGB')
 
-            # Nếu grayscale thì chuyển sang RGB
-            if img.mode != "RGB":
-                img = img.convert("RGB")
+            # Resize về kích thước đúng với model (thay đổi nếu cần)
+            img = img.resize((224, 224))  # chỉnh theo input của model bạn
 
-            img = img.resize((224, 224))
+            # Chuẩn hóa
             img_array = np.array(img) / 255.0
             img_array = np.expand_dims(img_array, axis=0)
 
             # Dự đoán
-            prediction = model.predict(img_array)
-            prob = float(prediction[0][0])
-            label = "Nodule" if prob >= 0.5 else "Non-Nodule"
-            confidence = prob if label == "Nodule" else 1 - prob
-            result = f"Kết quả: {label} ({confidence * 100:.2f}% tin cậy)"
-
-            flash("✅ Phân tích hình ảnh thành công!", "success")
+            if model is not None:
+                preds = model.predict(img_array)
+                label = "Nodule" if preds[0][0] > 0.5 else "Non-nodule"
+                prediction_result = f"Kết quả dự đoán: {label} (xác suất: {preds[0][0]:.4f})"
+            else:
+                prediction_result = "Model chưa được tải thành công."
 
         except Exception as e:
-            flash(f"Lỗi khi dự đoán ảnh: {e}", "danger")
+            prediction_result = f"Lỗi xử lý ảnh: {str(e)}"
 
-    return render_template("emr_prediction.html", result=result, image_path=image_path)
-
-
-# =============================
-# Route: Logout
-# =============================
-@app.route("/logout")
-def logout():
-    session.pop("user", None)
-    flash("Đã đăng xuất.", "success")
-    return redirect(url_for("login"))
-
+    return render_template('emr_prediction.html', prediction_result=prediction_result, image_url=image_url)
 
 # =============================
-# Run app
+# Hồ sơ EMR
 # =============================
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=False)
+@app.route('/emr_profile')
+def emr_profile():
+    return render_template('emr_profile.html')
+
+# =============================
+# Cấu hình Render
+# =============================
+if __name__ == '__main__':
+    port = int(os.environ.get('PORT', 10000))
+    app.run(host='0.0.0.0', port=port, debug=False)
