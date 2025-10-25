@@ -2,16 +2,17 @@ import os
 import secrets
 import numpy as np
 import pandas as pd
-# THAY ĐỔI: Nhập tensorflow để tải model
-import tensorflow as tf
+# SỬ DỤNG TF.KERAS CHUẨN ĐỂ TƯƠNG THÍCH TỐT NHẤT
+import tensorflow as tf 
 from flask import Flask, render_template, request, redirect, url_for, session, send_from_directory, flash
 from werkzeug.utils import secure_filename
 from PIL import Image
-# Đảm bảo dùng keras.models.load_model
-from keras.models import load_model 
 
-# THAY ĐỔI LỚN: Nhập Custom Object cho EfficientNetB0
-from tensorflow.keras.applications import EfficientNetB0 
+# THAY ĐỔI: Sử dụng tf.keras.models.load_model
+from tensorflow.keras.models import load_model 
+
+# THAY ĐỔI LỚN: KHÔNG CẦN NHẬP EfficientNetB0 hay swish/SiLU (đã tắt custom_objects)
+# VÌ MÔ HÌNH LÀ TIÊU CHUẨN, KERAS SẼ TỰ NHẬN DIỆN.
 
 from huggingface_hub import hf_hub_download
 
@@ -37,21 +38,17 @@ try:
     print("⏳ Tải model từ Hugging Face...")
     LOCAL_MODEL_PATH = hf_hub_download(repo_id=HF_MODEL_REPO, filename=HF_MODEL_FILE, cache_dir=MODEL_CACHE)
     
-    # SỬ DỤNG custom_objects CHỈ cho EfficientNetB0
-    custom_objects = {
-        'EfficientNetB0': EfficientNetB0,
-        # Nếu mô hình có các lớp custom khác (ví dụ: một hàm loss custom), bạn phải thêm vào đây.
-    }
-    
-    # Cố gắng tải model THẬT
-    model = load_model(LOCAL_MODEL_PATH, custom_objects=custom_objects)
+    # CHIẾN LƯỢC MỚI: Tải model với custom_objects rỗng và compile=False
+    # Việc này giúp Keras chỉ tải cấu trúc và trọng số, bỏ qua việc tái tạo Loss/Optimizer 
+    # vốn có thể gây ra lỗi khi có custom objects không được định nghĩa rõ ràng.
+    model = load_model(LOCAL_MODEL_PATH, custom_objects={}, compile=False)
     print(f"✅ Model THẬT (EfficientNetB0) đã tải xong và lưu tại {LOCAL_MODEL_PATH}")
 
 except Exception as e:
     # LOẠI BỎ MÔ HÌNH GIẢ LẬP. Nếu lỗi, model = None
     print(f"❌ Lỗi load model: {e}")
     print("LƯU Ý QUAN TRỌNG: Model THẬT không tải được. Chức năng dự đoán ảnh sẽ bị vô hiệu hóa.")
-    print("Vui lòng kiểm tra lại: 1. Model có sử dụng các Custom Object ngoài EfficientNetB0 không? 2. Lỗi Input Shape (3 kênh RGB).")
+    print("Vui lòng kiểm tra lại: Model có sử dụng Custom Loss Function không? Nếu có, hãy cung cấp mã nguồn.")
 
 
 # =============================
