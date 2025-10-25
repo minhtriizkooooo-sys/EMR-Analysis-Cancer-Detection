@@ -8,7 +8,6 @@ from werkzeug.utils import secure_filename
 from huggingface_hub import hf_hub_download
 from tensorflow.keras.models import load_model
 import base64
-import matplotlib.pyplot as plt
 
 # =============================
 # Flask config
@@ -34,7 +33,7 @@ try:
     print("⏳ Đang tải model thật từ Hugging Face…")
     model_path = hf_hub_download(repo_id=MODEL_REPO, filename=MODEL_FILENAME)
     model = load_model(model_path)
-    print("✅ Model thật đã được tải và load thành công.")
+    print("✅ Model đã được tải và load thành công.")
 except Exception as e:
     print(f"❌ Không thể tải hoặc load model từ HF: {e}")
     model = None
@@ -56,6 +55,7 @@ def login():
         password = request.form.get("password")
         if user_id == "user_demo" and password == "Test@123456":
             session["user"] = user_id
+            flash("Đăng nhập thành công!", "success")
             return redirect(url_for("dashboard"))
         else:
             flash("Sai thông tin đăng nhập!", "danger")
@@ -78,7 +78,7 @@ def dashboard():
     return render_template("dashboard.html")
 
 # =============================
-# EMR PROFILE
+# EMR PROFILE (phân tích file CSV/Excel)
 # =============================
 @app.route("/emr_profile", methods=["GET", "POST"])
 def emr_profile():
@@ -88,7 +88,6 @@ def emr_profile():
 
     summary_html = None
     filename = None
-    chart_path = None
 
     if request.method == "POST":
         file = request.files.get("file")
@@ -105,64 +104,25 @@ def emr_profile():
         file.save(filepath)
 
         try:
-            # Đọc dữ liệu
             if filename.endswith(".csv"):
                 df = pd.read_csv(filepath)
             else:
                 df = pd.read_excel(filepath)
 
-            total_rows, total_cols = df.shape
-
-            # Loại cột >80% NA
-            missing_ratio = df.isnull().mean()
-            df_clean = df.loc[:, missing_ratio < 0.8]
-
-            # Thống kê tổng quan
-            info_table = pd.DataFrame({
-                "Chỉ số": ["Số hàng", "Số cột", "Số cột bị loại (>80% NA)"],
-                "Giá trị": [total_rows, total_cols, total_cols - df_clean.shape[1]]
-            })
-
-            # Top 5 cột thiếu dữ liệu
-            top_missing = missing_ratio.sort_values(ascending=False).head(5) * 100
-            top_missing_table = pd.DataFrame({
-                "Cột": top_missing.index,
-                "Tỷ lệ thiếu dữ liệu (%)": top_missing.values
-            })
-
-            # Mô tả dữ liệu số & phân loại
-            desc_num = df_clean.describe().transpose()
-            desc_cat = df_clean.describe(include="object").transpose()
-
-            # Biểu đồ histogram
-            numeric_cols = df_clean.select_dtypes(include=[np.number]).columns
-            if len(numeric_cols) > 0:
-                plt.figure(figsize=(8, 4))
-                df_clean[numeric_cols[:min(2, len(numeric_cols))]].hist(bins=20, figsize=(8, 4))
-                plt.tight_layout()
-                chart_path = os.path.join(app.config["UPLOAD_FOLDER"], "analysis.png")
-                plt.savefig(chart_path)
-                plt.close()
-
-            # HTML tổng hợp
-            summary_html = (
-                "<h3>📊 Tổng quan dữ liệu</h3>" +
-                info_table.to_html(classes="table-auto border border-gray-300", index=False, border=0) +
-                "<h3>⚠️ Top 5 cột có nhiều giá trị trống</h3>" +
-                top_missing_table.to_html(classes="table-auto border border-gray-300", index=False, border=0) +
-                "<h3>🔢 Mô tả dữ liệu số</h3>" +
-                desc_num.to_html(classes="table-auto border border-gray-300", border=0) +
-                "<h3>🔠 Mô tả dữ liệu phân loại</h3>" +
-                desc_cat.to_html(classes="table-auto border border-gray-300", border=0)
+            # Loại bỏ các cột toàn NA trước khi describe
+            df = df.dropna(axis=1, how="all")
+            summary_html = df.describe(include="all").to_html(
+                classes="table-auto w-full border-collapse border border-gray-300",
+                border=0
             )
 
         except Exception as e:
-            flash(f"Lỗi khi đọc hoặc phân tích file: {e}", "danger")
+            flash(f"Lỗi khi đọc file: {e}", "danger")
 
-    return render_template("emr_profile.html", summary=summary_html, filename=filename, chart=chart_path)
+    return render_template("emr_profile.html", summary=summary_html, filename=filename)
 
 # =============================
-# EMR PREDICTION
+# EMR PREDICTION (phân tích hình ảnh)
 # =============================
 @app.route("/emr_prediction", methods=["GET", "POST"])
 def emr_prediction():
@@ -188,7 +148,7 @@ def emr_prediction():
         filepath = os.path.join(app.config["UPLOAD_FOLDER"], filename)
         file.save(filepath)
 
-        # Base64 hiển thị ảnh
+        # Base64 để hiển thị ảnh trong HTML
         with open(filepath, "rb") as f:
             image_b64 = base64.b64encode(f.read()).decode("utf-8")
 
@@ -197,9 +157,12 @@ def emr_prediction():
             return render_template("emr_prediction.html", filename=filename, image_b64=image_b64)
 
         try:
-            img = Image.open(filepath).convert("RGB")  # chấp nhận gray -> RGB
+            # Convert grayscale -> 3 channels RGB
+            img = Image.open(filepath).convert("L")  # luôn grayscale
             img = img.resize((224, 224))
-            arr = np.array(img) / 255.0
+            arr = np.array(img)
+            arr = np.stack((arr,) * 3, axis=-1)  # nhân đôi thành 3 kênh
+            arr = arr / 255.0
             arr = np.expand_dims(arr, axis=0)
 
             preds = model.predict(arr, verbose=0)
