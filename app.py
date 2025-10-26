@@ -16,6 +16,8 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import logging
+import time
+import glob
 
 # ==============================
 # Flask config
@@ -51,6 +53,7 @@ def load_model_once():
             return model
         try:
             logger.info("⏳ Loading model from Hugging Face...")
+            start_time = time.time()
             LOCAL_MODEL_PATH = hf_hub_download(
                 repo_id=HF_MODEL_REPO,
                 filename=HF_MODEL_FILE,
@@ -72,11 +75,22 @@ def load_model_once():
             model_local.compile(optimizer=Adam(1e-4), loss='binary_crossentropy', metrics=['accuracy'])
 
             model = model_local
-            logger.info("✅ Model EfficientNet loaded successfully.")
+            logger.info(f"✅ Model EfficientNet loaded successfully in {time.time() - start_time:.2f} seconds.")
             return model
         except Exception as e:
             logger.error(f"❌ Error loading model: {e}")
             return None
+
+def cleanup_old_files(folder, max_age_seconds=3600):
+    """Delete files older than max_age_seconds in the specified folder."""
+    now = time.time()
+    for file_path in glob.glob(os.path.join(folder, '*')):
+        if os.path.isfile(file_path) and now - os.path.getmtime(file_path) > max_age_seconds:
+            try:
+                os.remove(file_path)
+                logger.info(f"Deleted old file: {file_path}")
+            except Exception as e:
+                logger.error(f"Error deleting file {file_path}: {e}")
 
 # ==============================
 # Dummy user
@@ -171,6 +185,10 @@ def emr_profile():
                     plt.close()
                     chart_urls.append(url_for('static', filename=f"charts/Gender_{filename}.png"))
 
+                # Cleanup old files
+                cleanup_old_files(UPLOAD_FOLDER)
+                cleanup_old_files(CHART_FOLDER)
+
             except Exception as e:
                 flash(f"Error reading file or analyzing data: {e}", 'danger')
                 summary = f"<p class='text-red-500'>Error reading file: {e}</p>"
@@ -204,6 +222,7 @@ def emr_prediction():
                 file.save(file_path)
                 uploaded_image_url = url_for('uploaded_file', filename=filename)
 
+                # Load model on first prediction
                 mdl = load_model_once()
                 if mdl:
                     # Process image
@@ -230,6 +249,9 @@ def emr_prediction():
                         "image_url": uploaded_image_url
                     }
 
+                # Cleanup old files
+                cleanup_old_files(UPLOAD_FOLDER)
+
             except Exception as e:
                 logger.error(f"Prediction error: {e}")
                 flash(f"Prediction error: {e}", 'danger')
@@ -247,16 +269,11 @@ def uploaded_file(filename):
     return send_from_directory(UPLOAD_FOLDER, filename)
 
 # ==============================
-# Initialize Model
+# Initialize Application
 # ==============================
 if __name__ == "__main__":
-    # Pre-load model in a controlled manner
-    try:
-        logger.info("Pre-loading AI Model on startup...")
-        tf.get_logger().setLevel('ERROR')  # Suppress TensorFlow logs
-        load_model_once()
-    except Exception as e:
-        logger.error(f"Critical error during model pre-load: {e}")
-
     port = int(os.environ.get("PORT", 10000))
+    # Suppress TensorFlow logs
+    tf.get_logger().setLevel('ERROR')
+    # Run without pre-loading model to avoid startup timeout
     app.run(host="0.0.0.0", port=port, threaded=False)
