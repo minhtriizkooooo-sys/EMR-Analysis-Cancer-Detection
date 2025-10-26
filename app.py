@@ -62,6 +62,14 @@ def preprocess_image(image_path):
 def index():
     return render_template('index.html')
 
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    if request.method == 'POST':
+        # Add your login logic here (e.g., check credentials)
+        flash('Login functionality not fully implemented yet', 'info')
+        return redirect(url_for('dashboard'))  # Redirect to dashboard or another page after login
+    return render_template('index.html')  # Render login form (or a dedicated login.html if you have one)
+
 @app.route('/dashboard')
 def dashboard():
     return render_template('dashboard.html')
