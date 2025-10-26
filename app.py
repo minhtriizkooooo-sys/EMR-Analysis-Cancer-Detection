@@ -1,4 +1,5 @@
 import os
+import secrets
 import numpy as np
 from flask import Flask, render_template, request, redirect, url_for, flash
 from werkzeug.utils import secure_filename
@@ -7,14 +8,13 @@ from tensorflow.keras.models import load_model
 from tensorflow.keras.preprocessing.image import load_img, img_to_array
 from huggingface_hub import hf_hub_download
 import logging
-import shutil
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
-app.config['SECRET_KEY'] = secrets.token_hex(16)  # Replace with a secure key
+app.config['SECRET_KEY'] = secrets.token_hex(16)  # Generate a secure key
 app.config['UPLOAD_FOLDER'] = 'static/uploads'
 app.config['ALLOWED_EXTENSIONS'] = {'png', 'jpg', 'jpeg'}
 
@@ -22,19 +22,18 @@ app.config['ALLOWED_EXTENSIONS'] = {'png', 'jpg', 'jpeg'}
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 
 # Model configuration
-MODEL_REPO = 'minhtriizkooooo/EMR-Analysis-Cancer_Detection'  # Replace with your Hugging Face model repository
-MODEL_FILENAME = 'best_weights_model.keras'  # Replace with your model's filename
-IMG_SIZE = (224, 224)  # Adjust based on your model's expected input size
+MODEL_REPO = 'minhtriizkooooo/EMR-Analysis-Cancer_Detection'
+MODEL_FILENAME = 'best_weights_model.keras'
+IMG_SIZE = (224, 224)  # Model expects 224x224 images
 
 # Load the model from Hugging Face
 def load_keras_model():
     try:
         logger.info("⏳ Loading model from Hugging Face...")
-        # Download the model file
         model_path = hf_hub_download(repo_id=MODEL_REPO, filename=MODEL_FILENAME)
-        # Load the Keras model
         model = load_model(model_path)
         logger.info("✅ Model loaded successfully")
+        model.summary()  # Log model architecture for debugging
         return model
     except Exception as e:
         logger.error(f"❌ Error loading model: {str(e)}")
@@ -70,7 +69,6 @@ def dashboard():
 @app.route('/emr_profile', methods=['GET', 'POST'])
 def emr_profile():
     if request.method == 'POST':
-        # Handle form submission if needed
         return render_template('emr_profile.html')
     return render_template('emr_profile.html')
 
@@ -79,7 +77,6 @@ def emr_prediction():
     prediction = None
     uploaded_image = None
     if request.method == 'POST':
-        # Check if a file was uploaded
         if 'file' not in request.files:
             flash('No file part')
             return redirect(request.url)
@@ -91,21 +88,18 @@ def emr_prediction():
             filename = secure_filename(file.filename)
             file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
             file.save(file_path)
-            uploaded_image = f'uploads/{filename}'  # Relative path for template
+            uploaded_image = f'uploads/{filename}'
             
-            # Preprocess the image
             img_array = preprocess_image(file_path)
             if img_array is None:
                 flash('Error preprocessing image')
                 return redirect(request.url)
             
-            # Make prediction
             if model is None:
                 flash('Model not loaded')
                 return redirect(request.url)
             try:
                 pred = model.predict(img_array)
-                # Assuming binary classification (0 or 1)
                 prediction = 'Positive' if pred[0][0] > 0.5 else 'Negative'
                 logger.info(f"Prediction: {prediction}")
             except Exception as e:
@@ -120,4 +114,5 @@ def emr_prediction():
     return render_template('emr_prediction.html', prediction=None, uploaded_image=None)
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    port = int(os.environ.get('PORT', 10000))  # Use Render's PORT or default to 10000
+    app.run(host='0.0.0.0', port=port, debug=False)
