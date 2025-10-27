@@ -1,7 +1,7 @@
 import os
 import secrets
 import numpy as np
-from flask import Flask, render_template, request, redirect, url_for, flash
+from flask import Flask, render_template, request, redirect, url_for, flash, session
 from werkzeug.utils import secure_filename
 import tensorflow as tf
 from tensorflow.keras.models import load_model
@@ -17,6 +17,7 @@ app = Flask(__name__)
 app.config['SECRET_KEY'] = secrets.token_hex(16)  # Generate a secure key
 app.config['UPLOAD_FOLDER'] = 'static/uploads'
 app.config['ALLOWED_EXTENSIONS'] = {'png', 'jpg', 'jpeg'}
+app.config['SESSION_TYPE'] = 'filesystem'  # Optional: for session management
 
 # Ensure upload folder exists
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
@@ -65,59 +66,91 @@ def index():
 @app.route('/login', methods=['GET', 'POST'])
 def login():
     if request.method == 'POST':
-        # Add your login logic here (e.g., check credentials)
-        flash('Login functionality not fully implemented yet', 'info')
-        return redirect(url_for('dashboard'))  # Redirect to dashboard or another page after login
-    return render_template('index.html')  # Render login form (or a dedicated login.html if you have one)
+        # Placeholder login logic (replace with actual authentication)
+        username = request.form.get('username')
+        password = request.form.get('password')
+        if username and password:  # Add your authentication check here
+            session['logged_in'] = True
+            flash('Login successful!', 'success')
+            return redirect(url_for('dashboard'))
+        else:
+            flash('Invalid credentials. Please try again.', 'error')
+            return redirect(url_for('login'))
+    return render_template('index.html')  # Or a dedicated login.html
+
+@app.route('/logout', methods=['GET', 'POST'])
+def logout():
+    session.pop('logged_in', None)  # Clear login session
+    flash('You have been logged out.', 'success')
+    return redirect(url_for('index'))
 
 @app.route('/dashboard')
 def dashboard():
+    # Optional: Protect dashboard route
+    if not session.get('logged_in'):
+        flash('Please log in to access the dashboard.', 'error')
+        return redirect(url_for('login'))
     return render_template('dashboard.html')
 
 @app.route('/emr_profile', methods=['GET', 'POST'])
 def emr_profile():
-    if request.method == 'POST':
-        return render_template('emr_profile.html')
+    # Optional: Protect route
+    if not session.get('logged_in'):
+        flash('Please log in to access the EMR profile.', 'error')
+        return redirect(url_for('login'))
     return render_template('emr_profile.html')
 
 @app.route('/emr_prediction', methods=['GET', 'POST'])
 def emr_prediction():
+    # Optional: Protect route
+    if not session.get('logged_in'):
+        flash('Please log in to access the prediction page.', 'error')
+        return redirect(url_for('login'))
+
     prediction = None
     uploaded_image = None
     if request.method == 'POST':
         if 'file' not in request.files:
-            flash('No file part')
+            flash('No file part in the request.', 'error')
             return redirect(request.url)
         file = request.files['file']
         if file.filename == '':
-            flash('No selected file')
+            flash('No file selected.', 'error')
             return redirect(request.url)
         if file and allowed_file(file.filename):
             filename = secure_filename(file.filename)
             file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-            file.save(file_path)
-            uploaded_image = f'uploads/{filename}'
-            
+            try:
+                file.save(file_path)
+                uploaded_image = f'uploads/{filename}'
+            except Exception as e:
+                logger.error(f"❌ Error saving file: {str(e)}")
+                flash('Error saving the uploaded file.', 'error')
+                return redirect(request.url)
+
             img_array = preprocess_image(file_path)
             if img_array is None:
-                flash('Error preprocessing image')
+                flash('Error preprocessing the image.', 'error')
                 return redirect(request.url)
-            
+
             if model is None:
-                flash('Model not loaded')
+                flash('Model not loaded. Please try again later.', 'error')
                 return redirect(request.url)
+
             try:
                 pred = model.predict(img_array)
                 prediction = 'Positive' if pred[0][0] > 0.5 else 'Negative'
-                logger.info(f"Prediction: {prediction}")
+                confidence = float(pred[0][0]) * 100  # Convert to percentage
+                logger.info(f"Prediction: {prediction} (Confidence: {confidence:.2f}%)")
+                flash(f'Prediction: {prediction} (Confidence: {confidence:.2f}%)', 'success')
             except Exception as e:
                 logger.error(f"❌ Error during prediction: {str(e)}")
-                flash(f'Error during prediction: {str(e)}')
+                flash(f'Error during prediction: {str(e)}', 'error')
                 return redirect(request.url)
-            
-            return render_template('emr_prediction.html', prediction=prediction, uploaded_image=uploaded_image)
+
+            return render_template('emr_prediction.html', prediction=prediction, confidence=confidence, uploaded_image=uploaded_image)
         else:
-            flash('Invalid file type. Allowed types: png, jpg, jpeg')
+            flash('Invalid file type. Allowed types: png, jpg, jpeg', 'error')
             return redirect(request.url)
     return render_template('emr_prediction.html', prediction=None, uploaded_image=None)
 
