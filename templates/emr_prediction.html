@@ -1,188 +1,253 @@
-{% macro nav_bar(current_page) %}
-<nav class="w-full bg-primary-green shadow-lg">
-    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex justify-between items-center py-3">
-        <div class="text-xl font-bold text-white">EMR Insight AI</div>
-        <div class="flex space-x-6">
-            <a href="{{ url_for('dashboard') }}" class="text-white hover:text-green-200 transition duration-150 py-1 border-b-2 
-                {% if current_page == 'dashboard' %}border-white font-bold{% else %}border-transparent{% endif %}">
-                <i class="fas fa-home mr-1"></i> Dashboard
-            </a>
-            <a href="{{ url_for('emr_profile') }}" class="text-white hover:text-green-200 transition duration-150 py-1 border-b-2
-                {% if current_page == 'profile' %}border-white font-bold{% else %}border-transparent{% endif %}">
-                <i class="fas fa-file-upload mr-1"></i> Phân tích Dữ liệu
-            </a>
-            <a href="{{ url_for('emr_prediction') }}" class="text-white hover:text-green-200 transition duration-150 py-1 border-b-2
-                {% if current_page == 'prediction' %}border-white font-bold{% else %}border-transparent{% endif %}">
-                <i class="fas fa-microscope mr-1"></i> Dự đoán Hình ảnh
-            </a>
-        </div>
-        <div class="flex items-center">
-            <span class="text-white text-sm mr-4 hidden sm:inline">Xin chào, <strong>{{ session['user'] }}</strong></span>
-            <a href="{{ url_for('logout') }}" class="py-1 px-3 bg-white text-primary-green rounded-full hover:bg-gray-200 transition duration-150 font-semibold text-sm">
-                <i class="fas fa-sign-out-alt mr-1"></i> Đăng xuất
-            </a>
-        </div>
-    </div>
-</nav>
-{% endmacro %}
+import os
+import secrets
+import numpy as np
+import pandas as pd
+import base64
+from flask import Flask, render_template, request, redirect, url_for, flash, session
+from werkzeug.utils import secure_filename
+import tensorflow as tf
+from tensorflow.keras.models import load_model
+from tensorflow.keras.preprocessing.image import load_img, img_to_array
+from huggingface_hub import hf_hub_download
+import logging
 
-<!DOCTYPE html>
-<html lang="vi">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Dự đoán Hình ảnh Y tế (AI)</title>
-    <!-- Load Tailwind CSS -->
-    <script src="https://cdn.tailwindcss.com"></script>
-    <!-- Load Font Awesome for Icons -->
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.3/css/all.min.css">
-    <style>
-        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@100..900&display=swap');
-        /* Custom Green Theme */
-        :root {
-            --primary-green: #2e7d32; 
-            --light-green-bg: #e8f5e9; 
-        }
-        .bg-primary-green { background-color: var(--primary-green); }
-        .text-primary-green { color: var(--primary-green); }
+# Set up logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+app = Flask(__name__)
+app.config['SECRET_KEY'] = secrets.token_hex(16)  # Generate a secure key
+app.config['UPLOAD_FOLDER'] = 'static/uploads'
+app.config['ALLOWED_EXTENSIONS'] = {'png', 'jpg', 'jpeg', 'gif', 'bmp', 'csv', 'xls', 'xlsx'}
+app.config['SESSION_TYPE'] = 'filesystem'  # For session management
+
+# Ensure upload folder exists
+os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
+
+# Model configuration
+MODEL_REPO = 'minhtriizkooooo/EMR-Analysis-Cancer_Detection'
+MODEL_FILENAME = 'best_weights_model.keras'
+IMG_SIZE = (224, 224)  # Model expects 224x224 images
+
+# Load the model from Hugging Face
+def load_keras_model():
+    try:
+        logger.info("⏳ Loading model from Hugging Face...")
+        model_path = hf_hub_download(repo_id=MODEL_REPO, filename=MODEL_FILENAME)
+        model = load_model(model_path)
+        logger.info("✅ Model loaded successfully")
+        model.summary()  # Log model architecture for debugging
+        return model
+    except Exception as e:
+        logger.error(f"❌ Error loading model: {str(e)}")
+        return None
+
+# Initialize the model
+model = load_keras_model()
+
+# Function to check allowed file extensions
+def allowed_file(filename):
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in app.config['ALLOWED_EXTENSIONS']
+
+# Function to preprocess the uploaded image
+def preprocess_image(image_path):
+    try:
+        img = load_img(image_path, target_size=IMG_SIZE)
+        img_array = img_to_array(img)
+        img_array = np.expand_dims(img_array, axis=0)  # Add batch dimension
+        img_array = img_array / 255.0  # Normalize to [0, 1]
+        return img_array
+    except Exception as e:
+        logger.error(f"❌ Error preprocessing image: {str(e)}")
+        return None
+
+# Function to encode image to base64
+def image_to_base64(image_path):
+    try:
+        with open(image_path, "rb") as image_file:
+            return base64.b64encode(image_file.read()).decode('utf-8')
+    except Exception as e:
+        logger.error(f"❌ Error encoding image to base64: {str(e)}")
+        return None
+
+# Function to process CSV/Excel file and generate detailed summary
+def process_emr_file(file_path):
+    try:
+        if file_path.endswith('.csv'):
+            df = pd.read_csv(file_path)
+        else:  # .xls or .xlsx
+            df = pd.read_excel(file_path)
         
-        body {
-            background-color: var(--light-green-bg);
-            font-family: 'Inter', sans-serif;
-            display: flex; 
-            flex-direction: column;
-            min-height: 100vh;
-        }
-        main {
-            flex-grow: 1; 
-        }
-        .result-box {
-            transition: all 0.3s ease-in-out;
-        }
-    </style>
-</head>
-<body>
+        # Generate detailed summary
+        summary_html = ""
+        
+        # 1. Data Shape
+        summary_html += "<h3 class='text-xl font-bold mb-2'>Kích thước dữ liệu</h3>"
+        summary_html += f"<p>Số hàng: {df.shape[0]}</p>"
+        summary_html += f"<p>Số cột: {df.shape[1]}</p>"
+        
+        # 2. Column Info
+        summary_html += "<h3 class='text-xl font-bold mt-4 mb-2'>Thông tin cột</h3>"
+        col_info = pd.DataFrame({
+            'Kiểu dữ liệu': df.dtypes,
+            'Giá trị thiếu': df.isnull().sum(),
+            'Giá trị duy nhất': df.nunique()
+        })
+        summary_html += col_info.to_html(classes='table-auto w-full border-collapse', index=True)
+        
+        # 3. Descriptive Statistics
+        summary_html += "<h3 class='text-xl font-bold mt-4 mb-2'>Thống kê mô tả</h3>"
+        summary_html += df.describe(include='all').to_html(classes='table-auto w-full border-collapse')
+        
+        # 4. Missing Values Percentage
+        summary_html += "<h3 class='text-xl font-bold mt-4 mb-2'>Tỷ lệ giá trị thiếu (%)</h3>"
+        missing_perc = (df.isnull().mean() * 100).to_frame(name='Tỷ lệ thiếu (%)').round(2)
+        summary_html += missing_perc.to_html(classes='table-auto w-full border-collapse', index=True)
+        
+        # 5. Sample Data (first 5 rows)
+        summary_html += "<h3 class='text-xl font-bold mt-4 mb-2'>Dữ liệu mẫu (5 hàng đầu)</h3>"
+        summary_html += df.head().to_html(classes='table-auto w-full border-collapse', index=False)
+        
+        return summary_html
+    except Exception as e:
+        logger.error(f"❌ Error processing EMR file: {str(e)}")
+        return None
+
+@app.route('/')
+def index():
+    return render_template('index.html')
+
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    if request.method == 'POST':
+        # Match form fields from index.html
+        user_id = request.form.get('userID')
+        password = request.form.get('password')
+        # Placeholder authentication (replace with actual logic, e.g., database check)
+        if user_id == 'user_demo' and password == 'Test@123456':  # Demo credentials
+            session['logged_in'] = True
+            session['user'] = user_id  # Set user for display in templates
+            #flash('Đăng nhập thành công!', 'success')
+            return redirect(url_for('dashboard'))
+        else:
+            flash('ID người dùng hoặc mật khẩu không đúng. Vui lòng thử lại.', 'danger')
+            return redirect(url_for('login'))
+    return render_template('index.html')
+
+@app.route('/logout', methods=['GET', 'POST'])
+def logout():
+    session.pop('logged_in', None)
+    session.pop('user', None)  # Clear user data
+    flash('Bạn đã đăng xuất.', 'success')
+    return redirect(url_for('index'))
+
+@app.route('/dashboard')
+def dashboard():
+    if not session.get('logged_in'):
+        flash('Vui lòng đăng nhập để truy cập dashboard.', 'danger')
+        return redirect(url_for('login'))
+    return render_template('dashboard.html')
+
+@app.route('/emr_profile', methods=['GET', 'POST'])
+def emr_profile():
+    if not session.get('logged_in'):
+        flash('Vui lòng đăng nhập để truy cập phân tích hồ sơ EMR.', 'danger')
+        return redirect(url_for('login'))
     
-    <!-- Header chứa Logo -->
-    <header class="w-full bg-white shadow-md p-4 flex justify-center items-center h-24">
-        <div class="logo-container">
-            <img src="static/Logo_Marie_Curie.png" alt="Logo Marie Curie"
-                 class="max-h-20 w-auto object-contain"
-                 onerror="this.onerror=null; this.src='https://placehold.co/180x80/2e7d32/ffffff?text=EMR+AI+LOGO'">
-        </div>
-    </header>
+    filename = None
+    summary = None
+    if request.method == 'POST':
+        if 'file' not in request.files:
+            flash('Không tìm thấy file trong yêu cầu.', 'danger')
+            return redirect(request.url)
+        file = request.files['file']
+        if file.filename == '':
+            flash('Chưa chọn file.', 'danger')
+            return redirect(request.url)
+        if file and allowed_file(file.filename):
+            filename = secure_filename(file.filename)
+            file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+            try:
+                file.save(file_path)
+                summary = process_emr_file(file_path)
+                if summary is None:
+                    flash('Lỗi khi xử lý file EMR.', 'danger')
+                    return redirect(request.url)
+                flash('Phân tích file EMR thành công!', 'success')
+            except Exception as e:
+                logger.error(f"❌ Error saving EMR file: {str(e)}")
+                flash('Lỗi khi lưu file EMR.', 'danger')
+                return redirect(request.url)
+        else:
+            flash('Loại file không hợp lệ. Chỉ chấp nhận CSV, XLS, XLSX.', 'danger')
+            return redirect(request.url)
     
-    {{ nav_bar('prediction') }}
+    return render_template('emr_profile.html', filename=filename, summary=summary)
 
-    <main class="max-w-7xl mx-auto p-4 sm:p-6 lg:p-8 mt-10">
-        <h1 class="text-4xl font-extrabold text-gray-800 mb-8 border-b-4 border-primary-green pb-3">
-            <i class="fas fa-microscope text-primary-green mr-3"></i> Dự đoán Hình ảnh Y tế (Nodule Detection)
-        </h1>
-
-        <div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
-            <!-- Upload Panel -->
-            <div class="bg-white p-6 rounded-xl shadow-xl space-y-4 h-fit border-t-4 border-green-600">
-                <h2 class="text-2xl font-semibold text-primary-green mb-4">Tải lên Hình ảnh</h2>
-                
-                <!-- Flash Messages -->
-                {% with messages = get_flashed_messages(with_categories=true) %}
-                    {% if messages %}
-                        <div class="space-y-2 mb-4">
-                            {% for category, message in messages %}
-                                {% set bg_color = 'bg-red-100 text-red-700 border-red-400' if category == 'danger' or category == 'warning' else 'bg-green-100 text-green-700 border-green-400' %}
-                                <div class="p-3 {{ bg_color }} border rounded-lg font-medium" role="alert">
-                                    <i class="fas fa-exclamation-circle mr-2"></i> {{ message }}
-                                </div>
-                            {% endfor %}
-                        </div>
-                    {% endif %}
-                {% endwith %}
-
-                <form method="POST" action="{{ url_for('emr_prediction') }}" enctype="multipart/form-data" class="space-y-5">
-                    <div>
-                        <!-- Đã điều chỉnh Label để liệt kê rõ hơn các định dạng -->
-                        <label for="image-upload" class="block text-sm font-medium text-gray-700 mb-2">
-                            Chọn file Hình ảnh (JPG, PNG, GIF, BMP):
-                        </label>
-                        <input type="file" name="file" id="image-upload" required>
-                                
-                    </div>
-                    <button type="submit"
-                            class="w-full flex justify-center py-3 px-4 rounded-lg shadow-lg text-sm font-medium text-white bg-primary-green hover:bg-primary-dark-green transition duration-150">
-                        <i class="fas fa-brain mr-2"></i> Dự đoán bằng AI
-                    </button>
-                </form>
-
-                {% if filename and image_b64 %}
-                    <div class="mt-6 pt-4 border-t border-gray-200">
-                        <p class="text-sm text-gray-600 font-semibold mb-3">Hình ảnh đã tải lên:</p>
-                        <div class="flex justify-center p-4 bg-gray-50 rounded-lg">
-                            <!-- SỬ DỤNG BASE64 ĐỂ HIỂN THỊ ẢNH TRỰC TIẾP -->
-                            <img src="data:image/jpeg;base64,{{ image_b64 }}" 
-                                 alt="Uploaded Image for Prediction"
-                                 class="max-w-full max-h-80 object-contain rounded-lg shadow-md"
-                                 id="preview-image"/>
-                        </div>
-                        <p class="text-sm text-center text-gray-500 mt-2 break-all">{{ filename }}</p>
-                    </div>
-                {% endif %}
-            </div>
-
-            <!-- Prediction Result Panel -->
-            <div class="bg-white p-8 rounded-xl shadow-2xl min-h-[500px]">
-                <h2 class="text-3xl font-bold text-gray-800 mb-6">Kết quả Dự đoán AI</h2>
-                
-                {% if prediction %}
-                    <!-- Displaying Prediction Result -->
-                    <div class="result-box p-6 rounded-xl shadow-lg border-l-8 
-                                 {% if prediction.result == 'Nodule' %}
-                                     border-red-500 bg-red-50
-                                 {% elif prediction.result == 'Non-nodule' %}
-                                     border-green-500 bg-green-50
-                                 {% endif %}">
-                        
-                        <div class="flex items-center space-x-4 mb-4">
-                            {% if prediction.result == 'Nodule' %}
-                                <i class="fas fa-exclamation-triangle text-5xl text-red-600"></i>
-                                <p class="text-3xl font-extrabold text-red-700">CÓ DẤU HIỆU NODULE</p>
-                            {% elif prediction.result == 'Non-nodule' %}
-                                <i class="fas fa-check-circle text-5xl text-green-600"></i>
-                                <p class="text-3xl font-extrabold text-green-700">KHÔNG CÓ DẤU HIỆU NODULE</p>
-                            {% endif %}
-                        </div>
-
-                        <p class="text-gray-700 mb-3">Mô hình AI đã phân tích hình ảnh và đưa ra kết quả:</p>
-                        
-                        <div class="bg-white p-4 rounded-lg border border-gray-200 shadow-inner">
-                            <p class="text-lg font-semibold text-gray-600 mb-1">Xác suất Dự đoán:</p>
-                            <p class="text-2xl font-bold 
-                                {% if prediction.result == 'Nodule' %}text-red-600{% elif prediction.result == 'Non-nodule' %}text-green-600{% endif %}">
-                                {{ "%.2f"|format(prediction.probability * 100) }}%
-                            </p>
-                        </div>
-                        
-                        <p class="mt-4 text-sm text-gray-500 italic">
-                            *Lưu ý: Kết quả này chỉ mang tính tham khảo và cần được xác nhận bởi bác sĩ chuyên môn.
-                        </p>
-                    </div>
-
-                {% else %}
-                    <div class="flex flex-col items-center justify-center h-full text-center text-gray-400 p-10">
-                        <i class="fas fa-brain text-8xl mb-4 text-green-300"></i>
-                        <p class="text-xl font-medium">Sẵn sàng để dự đoán...</p>
-                        <p class="text-sm mt-2">Vui lòng tải lên hình ảnh y tế (X-Ray/MRI/CT) để mô hình AI thực hiện phân tích.</p>
-                    </div>
-                {% endif %}
-            </div>
-        </div>
-    </main>
+@app.route('/emr_prediction', methods=['GET', 'POST'])
+def emr_prediction():
+    if not session.get('logged_in'):
+        flash('Vui lòng đăng nhập để truy cập trang dự đoán.', 'danger')
+        return redirect(url_for('login'))
     
-    <!-- Footer chứa thông tin liên hệ -->
-    <footer class="mt-10 p-4 bg-white text-gray-500 text-xs text-center border-t border-gray-200 shadow-inner">
-        <p><strong>Liên hệ:</strong> Công ty TNHH MTV Minh Trí và những người bạn Marie Curie<br>
-        159 Nam Kỳ Khởi Nghĩa, Phường Xuân Hòa, Tp. Hồ Chí Minh<br>
-        Lại Nguyễn Minh Trí - <a href="mailto:laingminhtri@gmail.com" class="text-primary-green hover:text-green-800">laingminhtri@gmail.com</a></p>
-    </footer>
+    prediction = None
+    uploaded_image = None
+    image_b64 = None
+    filename = None
     
-</body>
-</html>
+    if request.method == 'POST':
+        if 'file' not in request.files:
+            flash('Không tìm thấy file trong yêu cầu.', 'danger')
+            return redirect(request.url)
+        file = request.files['file']
+        if file.filename == '':
+            flash('Chưa chọn file.', 'danger')
+            return redirect(request.url)
+        if file and allowed_file(file.filename):
+            filename = secure_filename(file.filename)
+            file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+            try:
+                file.save(file_path)
+                uploaded_image = f'uploads/{filename}'
+                image_b64 = image_to_base64(file_path)
+                if image_b64 is None:
+                    flash('Lỗi khi mã hóa hình ảnh.', 'danger')
+                    return redirect(request.url)
+            except Exception as e:
+                logger.error(f"❌ Error saving file: {str(e)}")
+                flash('Lỗi khi lưu file hình ảnh.', 'danger')
+                return redirect(request.url)
+            
+            img_array = preprocess_image(file_path)
+            if img_array is None:
+                flash('Lỗi khi xử lý hình ảnh.', 'danger')
+                return redirect(request.url)
+            
+            if model is None:
+                # Thử load lại model nếu chưa load
+                global model
+                model = load_keras_model()
+                if model is None:
+                    flash('Không thể tải mô hình AI. Vui lòng thử lại sau.', 'danger')
+                    return redirect(request.url)
+            
+            try:
+                pred = model.predict(img_array)
+                result = 'Nodule' if pred[0][0] > 0.5 else 'Non-nodule'
+                probability = float(pred[0][0])
+                prediction = {'result': result, 'probability': probability}
+                logger.info(f"Dự đoán: {result} (Xác suất: {probability*100:.2f}%)")
+                flash(f'Dự đoán: {result} (Xác suất: {probability*100:.2f}%)', 'success')
+            except Exception as e:
+                logger.error(f"❌ Lỗi khi dự đoán: {str(e)}")
+                flash(f'Lỗi khi thực hiện dự đoán: {str(e)}', 'danger')
+                return redirect(request.url)
+        else:
+            flash('Loại file không hợp lệ. Chỉ chấp nhận PNG, JPG, JPEG, GIF, BMP.', 'danger')
+            return redirect(request.url)
+    
+    return render_template('emr_prediction.html', prediction=prediction, uploaded_image=uploaded_image, image_b64=image_b64, filename=filename)
+
+if __name__ == '__main__':
+    port = int(os.environ.get('PORT', 10000))  # Use Render's PORT or default to 10000
+    app.run(host='0.0.0.0', port=port, debug=False)
