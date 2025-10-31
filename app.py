@@ -174,7 +174,7 @@ def emr_profile():
                 if summary is None:
                     flash('Lỗi khi xử lý file EMR.', 'danger')
                     return redirect(request.url)
-                #flash('Phân tích file EMR thành công!', 'success')
+                flash('Phân tích file EMR thành công!', 'success')
             except Exception as e:
                 logger.error(f"❌ Error saving EMR file: {str(e)}")
                 flash('Lỗi khi lưu file EMR.', 'danger')
@@ -228,9 +228,9 @@ def emr_prediction():
                 flash('Lỗi khi xử lý hình ảnh.', 'danger')
                 return redirect(request.url)
             
+            global model
             if model is None:
                 # Thử load lại model nếu chưa load
-                global model
                 model = load_keras_model()
                 if model is None:
                     flash('Không thể tải mô hình AI. Vui lòng thử lại sau.', 'danger')
