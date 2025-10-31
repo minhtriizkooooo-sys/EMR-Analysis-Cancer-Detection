@@ -43,8 +43,8 @@ def load_keras_model():
         logger.error(f"❌ Error loading model: {str(e)}")
         return None
 
-# Initialize the model
-model = load_keras_model()
+# Initialize the model as None for lazy loading
+model = None
 
 # Function to check allowed file extensions
 def allowed_file(filename):
