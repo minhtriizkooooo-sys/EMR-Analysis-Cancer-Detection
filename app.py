@@ -3,6 +3,7 @@ import secrets
 import numpy as np
 import pandas as pd
 import base64
+import mimetypes
 from flask import Flask, render_template, request, redirect, url_for, flash, session
 from werkzeug.utils import secure_filename
 import tensorflow as tf
@@ -18,7 +19,7 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 app.config['SECRET_KEY'] = secrets.token_hex(16)  # Generate a secure key
 app.config['UPLOAD_FOLDER'] = 'static/uploads'
-app.config['ALLOWED_EXTENSIONS'] = {'png', 'jpg', 'jpeg', 'csv', 'xls', 'xlsx'}
+app.config['ALLOWED_EXTENSIONS'] = {'png', 'jpg', 'jpeg', 'gif', 'bmp', 'csv', 'xls', 'xlsx'}
 app.config['SESSION_TYPE'] = 'filesystem'  # For session management
 
 # Ensure upload folder exists
@@ -70,16 +71,45 @@ def image_to_base64(image_path):
         logger.error(f"❌ Error encoding image to base64: {str(e)}")
         return None
 
-# Function to process CSV/Excel file and generate summary
+# Function to process CSV/Excel file and generate detailed summary
 def process_emr_file(file_path):
     try:
         if file_path.endswith('.csv'):
             df = pd.read_csv(file_path)
         else:  # .xls or .xlsx
             df = pd.read_excel(file_path)
-        # Generate a basic summary (customize as needed)
-        summary = df.describe().to_html(classes='table-auto w-full border-collapse')
-        return summary
+        
+        # Generate detailed summary
+        summary_html = ""
+        
+        # 1. Data Shape
+        summary_html += "<h3 class='text-xl font-bold mb-2'>Kích thước dữ liệu</h3>"
+        summary_html += f"<p>Số hàng: {df.shape[0]}</p>"
+        summary_html += f"<p>Số cột: {df.shape[1]}</p>"
+        
+        # 2. Column Info
+        summary_html += "<h3 class='text-xl font-bold mt-4 mb-2'>Thông tin cột</h3>"
+        col_info = pd.DataFrame({
+            'Kiểu dữ liệu': df.dtypes,
+            'Giá trị thiếu': df.isnull().sum(),
+            'Giá trị duy nhất': df.nunique()
+        })
+        summary_html += col_info.to_html(classes='table-auto w-full border-collapse', index=True)
+        
+        # 3. Descriptive Statistics
+        summary_html += "<h3 class='text-xl font-bold mt-4 mb-2'>Thống kê mô tả</h3>"
+        summary_html += df.describe(include='all').to_html(classes='table-auto w-full border-collapse')
+        
+        # 4. Missing Values Percentage
+        summary_html += "<h3 class='text-xl font-bold mt-4 mb-2'>Tỷ lệ giá trị thiếu (%)</h3>"
+        missing_perc = (df.isnull().mean() * 100).to_frame(name='Tỷ lệ thiếu (%)').round(2)
+        summary_html += missing_perc.to_html(classes='table-auto w-full border-collapse', index=True)
+        
+        # 5. Sample Data (first 5 rows)
+        summary_html += "<h3 class='text-xl font-bold mt-4 mb-2'>Dữ liệu mẫu (5 hàng đầu)</h3>"
+        summary_html += df.head().to_html(classes='table-auto w-full border-collapse', index=False)
+        
+        return summary_html
     except Exception as e:
         logger.error(f"❌ Error processing EMR file: {str(e)}")
         return None
@@ -101,7 +131,7 @@ def login():
             #flash('Đăng nhập thành công!', 'success')
             return redirect(url_for('dashboard'))
         else:
-            flash('ID người dùng hoặc mật khẩu không đúng. Vui lòng thử lại.', 'error')
+            flash('ID người dùng hoặc mật khẩu không đúng. Vui lòng thử lại.', 'danger')
             return redirect(url_for('login'))
     return render_template('index.html')
 
@@ -109,31 +139,31 @@ def login():
 def logout():
     session.pop('logged_in', None)
     session.pop('user', None)  # Clear user data
-    flash('Bạn đã đăng xuất.', 'success')
+    #flash('Bạn đã đăng xuất.', 'success')
     return redirect(url_for('index'))
 
 @app.route('/dashboard')
 def dashboard():
     if not session.get('logged_in'):
-        flash('Vui lòng đăng nhập để truy cập dashboard.', 'error')
+        flash('Vui lòng đăng nhập để truy cập dashboard.', 'danger')
         return redirect(url_for('login'))
     return render_template('dashboard.html')
 
 @app.route('/emr_profile', methods=['GET', 'POST'])
 def emr_profile():
     if not session.get('logged_in'):
-        flash('Vui lòng đăng nhập để truy cập phân tích hồ sơ EMR.', 'error')
+        flash('Vui lòng đăng nhập để truy cập phân tích hồ sơ EMR.', 'danger')
         return redirect(url_for('login'))
     
     filename = None
     summary = None
     if request.method == 'POST':
         if 'file' not in request.files:
-            flash('Không tìm thấy file trong yêu cầu.', 'error')
+            flash('Không tìm thấy file trong yêu cầu.', 'danger')
             return redirect(request.url)
         file = request.files['file']
         if file.filename == '':
-            flash('Chưa chọn file.', 'error')
+            flash('Chưa chọn file.', 'danger')
             return redirect(request.url)
         if file and allowed_file(file.filename):
             filename = secure_filename(file.filename)
@@ -142,14 +172,15 @@ def emr_profile():
                 file.save(file_path)
                 summary = process_emr_file(file_path)
                 if summary is None:
-                    flash('Lỗi khi xử lý file EMR.', 'error')
+                    flash('Lỗi khi xử lý file EMR.', 'danger')
                     return redirect(request.url)
+                #flash('Phân tích file EMR thành công!', 'success')
             except Exception as e:
                 logger.error(f"❌ Error saving EMR file: {str(e)}")
-                flash('Lỗi khi lưu file EMR.', 'error')
+                flash('Lỗi khi lưu file EMR.', 'danger')
                 return redirect(request.url)
         else:
-            flash('Loại file không hợp lệ. Chỉ chấp nhận CSV, XLS, XLSX.', 'error')
+            flash('Loại file không hợp lệ. Chỉ chấp nhận CSV, XLS, XLSX.', 'danger')
             return redirect(request.url)
     
     return render_template('emr_profile.html', filename=filename, summary=summary)
@@ -157,21 +188,22 @@ def emr_profile():
 @app.route('/emr_prediction', methods=['GET', 'POST'])
 def emr_prediction():
     if not session.get('logged_in'):
-        flash('Vui lòng đăng nhập để truy cập trang dự đoán.', 'error')
+        flash('Vui lòng đăng nhập để truy cập trang dự đoán.', 'danger')
         return redirect(url_for('login'))
     
     prediction = None
     uploaded_image = None
     image_b64 = None
     filename = None
+    mime_type = None
     
     if request.method == 'POST':
         if 'file' not in request.files:
-            flash('Không tìm thấy file trong yêu cầu.', 'error')
+            flash('Không tìm thấy file trong yêu cầu.', 'danger')
             return redirect(request.url)
         file = request.files['file']
         if file.filename == '':
-            flash('Chưa chọn file.', 'error')
+            flash('Chưa chọn file.', 'danger')
             return redirect(request.url)
         if file and allowed_file(file.filename):
             filename = secure_filename(file.filename)
@@ -181,21 +213,28 @@ def emr_prediction():
                 uploaded_image = f'uploads/{filename}'
                 image_b64 = image_to_base64(file_path)
                 if image_b64 is None:
-                    flash('Lỗi khi mã hóa hình ảnh.', 'error')
+                    flash('Lỗi khi mã hóa hình ảnh.', 'danger')
                     return redirect(request.url)
+                mime_type = mimetypes.guess_type(file_path)[0]
+                if mime_type is None:
+                    mime_type = 'image/jpeg'
             except Exception as e:
                 logger.error(f"❌ Error saving file: {str(e)}")
-                flash('Lỗi khi lưu file hình ảnh.', 'error')
+                flash('Lỗi khi lưu file hình ảnh.', 'danger')
                 return redirect(request.url)
             
             img_array = preprocess_image(file_path)
             if img_array is None:
-                flash('Lỗi khi xử lý hình ảnh.', 'error')
+                flash('Lỗi khi xử lý hình ảnh.', 'danger')
                 return redirect(request.url)
             
             if model is None:
-                flash('Mô hình AI chưa được tải. Vui lòng thử lại sau.', 'error')
-                return redirect(request.url)
+                # Thử load lại model nếu chưa load
+                global model
+                model = load_keras_model()
+                if model is None:
+                    flash('Không thể tải mô hình AI. Vui lòng thử lại sau.', 'danger')
+                    return redirect(request.url)
             
             try:
                 pred = model.predict(img_array)
@@ -206,15 +245,14 @@ def emr_prediction():
                 flash(f'Dự đoán: {result} (Xác suất: {probability*100:.2f}%)', 'success')
             except Exception as e:
                 logger.error(f"❌ Lỗi khi dự đoán: {str(e)}")
-                flash(f'Lỗi khi thực hiện dự đoán: {str(e)}', 'error')
+                flash(f'Lỗi khi thực hiện dự đoán: {str(e)}', 'danger')
                 return redirect(request.url)
         else:
-            flash('Loại file không hợp lệ. Chỉ chấp nhận PNG, JPG, JPEG.', 'error')
+            flash('Loại file không hợp lệ. Chỉ chấp nhận PNG, JPG, JPEG, GIF, BMP.', 'danger')
             return redirect(request.url)
     
-    return render_template('emr_prediction.html', prediction=prediction, uploaded_image=uploaded_image, image_b64=image_b64, filename=filename)
+    return render_template('emr_prediction.html', prediction=prediction, uploaded_image=uploaded_image, image_b64=image_b64, filename=filename, mime_type=mime_type)
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 10000))  # Use Render's PORT or default to 10000
     app.run(host='0.0.0.0', port=port, debug=False)
-
