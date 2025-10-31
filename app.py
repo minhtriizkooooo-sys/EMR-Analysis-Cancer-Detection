@@ -128,7 +128,6 @@ def login():
         if user_id == 'user_demo' and password == 'Test@123456':  # Demo credentials
             session['logged_in'] = True
             session['user'] = user_id  # Set user for display in templates
-            #flash('Đăng nhập thành công!', 'success')
             return redirect(url_for('dashboard'))
         else:
             flash('ID người dùng hoặc mật khẩu không đúng. Vui lòng thử lại.', 'danger')
@@ -139,7 +138,6 @@ def login():
 def logout():
     session.pop('logged_in', None)
     session.pop('user', None)  # Clear user data
-    #flash('Bạn đã đăng xuất.', 'success')
     return redirect(url_for('index'))
 
 @app.route('/dashboard')
@@ -174,7 +172,6 @@ def emr_profile():
                 if summary is None:
                     flash('Lỗi khi xử lý file EMR.', 'danger')
                     return redirect(request.url)
-                #flash('Phân tích file EMR thành công!', 'success')
             except Exception as e:
                 logger.error(f"❌ Error saving EMR file: {str(e)}")
                 flash('Lỗi khi lưu file EMR.', 'danger')
@@ -242,7 +239,6 @@ def emr_prediction():
                 probability = float(pred[0][0])
                 prediction = {'result': result, 'probability': probability}
                 logger.info(f"Dự đoán: {result} (Xác suất: {probability*100:.2f}%)")
-                flash(f'Dự đoán: {result} (Xác suất: {probability*100:.2f}%)', 'success')
             except Exception as e:
                 logger.error(f"❌ Lỗi khi dự đoán: {str(e)}")
                 flash(f'Lỗi khi thực hiện dự đoán: {str(e)}', 'danger')
@@ -256,4 +252,3 @@ def emr_prediction():
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 10000))  # Use Render's PORT or default to 10000
     app.run(host='0.0.0.0', port=port, debug=False)
-
