@@ -98,7 +98,7 @@ def login():
         if user_id == 'user_demo' and password == 'Test@123456':  # Demo credentials
             session['logged_in'] = True
             session['user'] = user_id  # Set user for display in templates
-            flash('Đăng nhập thành công!', 'success')
+            #flash('Đăng nhập thành công!', 'success')
             return redirect(url_for('dashboard'))
         else:
             flash('ID người dùng hoặc mật khẩu không đúng. Vui lòng thử lại.', 'error')
@@ -217,3 +217,4 @@ def emr_prediction():
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 10000))  # Use Render's PORT or default to 10000
     app.run(host='0.0.0.0', port=port, debug=False)
+
