@@ -227,7 +227,6 @@ def emr_prediction():
             
             global model
             if model is None:
-                # Thử load lại model nếu chưa load
                 model = load_keras_model()
                 if model is None:
                     flash('Không thể tải mô hình AI. Vui lòng thử lại sau.', 'danger')
