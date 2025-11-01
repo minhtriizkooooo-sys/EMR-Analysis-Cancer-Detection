@@ -4,49 +4,69 @@ import numpy as np
 import pandas as pd
 import base64
 import mimetypes
+import threading
+import logging
 from flask import Flask, render_template, request, redirect, url_for, flash, session
 from werkzeug.utils import secure_filename
 import tensorflow as tf
 from tensorflow.keras.models import load_model
 from tensorflow.keras.preprocessing.image import load_img, img_to_array
 from huggingface_hub import hf_hub_download
-import logging
 
-# Set up logging
+# ==========================================================
+# 🧠 SAFE TENSORFLOW CONFIG (avoid 502 crash on Render)
+# ==========================================================
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+try:
+    tf.config.set_visible_devices([], 'GPU')
+except Exception:
+    pass  # No GPU on Render anyway
+
+# Logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# ==========================================================
+# 🔧 FLASK CONFIG
+# ==========================================================
 app = Flask(__name__)
 app.config['SECRET_KEY'] = secrets.token_hex(16)
 app.config['UPLOAD_FOLDER'] = 'static/uploads'
 app.config['ALLOWED_EXTENSIONS'] = {'png', 'jpg', 'jpeg', 'gif', 'bmp', 'csv', 'xls', 'xlsx'}
 app.config['SESSION_TYPE'] = 'filesystem'
-
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 
-# =========================================
-# Model configuration
-# =========================================
+# ==========================================================
+# 🔬 MODEL CONFIG
+# ==========================================================
 MODEL_REPO = 'minhtriizkooooo/EMR-Analysis-Cancer_Detection'
 MODEL_FILENAME = 'best_weights_model.keras'
 IMG_SIZE = (224, 224)
-
-model = None  # lazy-loaded later
+model = None
 
 
 def load_keras_model():
-    """Download and load model from Hugging Face Hub."""
+    """Download and load Keras model safely from Hugging Face"""
+    global model
+    if model is not None:
+        return model
     try:
         logger.info("⏳ Loading model from Hugging Face...")
         model_path = hf_hub_download(repo_id=MODEL_REPO, filename=MODEL_FILENAME)
-        loaded = load_model(model_path)
-        logger.info("✅ Model loaded successfully")
-        return loaded
+        model = load_model(model_path)
+        logger.info("✅ Model loaded successfully.")
+        return model
     except Exception as e:
         logger.error(f"❌ Error loading model: {str(e)}")
         return None
 
 
+# Preload model in background thread to prevent Render timeout
+threading.Thread(target=load_keras_model, daemon=True).start()
+
+# ==========================================================
+# 🧰 HELPER FUNCTIONS
+# ==========================================================
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in app.config['ALLOWED_EXTENSIONS']
 
@@ -77,11 +97,13 @@ def process_emr_file(file_path):
             df = pd.read_csv(file_path)
         else:
             df = pd.read_excel(file_path)
+
         summary_html = ""
         summary_html += "<h3 class='text-xl font-bold mb-2'>Kích thước dữ liệu</h3>"
         summary_html += f"<p>Số hàng: {df.shape[0]}</p>"
         summary_html += f"<p>Số cột: {df.shape[1]}</p>"
         summary_html += "<h3 class='text-xl font-bold mt-4 mb-2'>Thông tin cột</h3>"
+
         col_info = pd.DataFrame({
             'Kiểu dữ liệu': df.dtypes,
             'Giá trị thiếu': df.isnull().sum(),
@@ -95,12 +117,16 @@ def process_emr_file(file_path):
         summary_html += missing_perc.to_html(classes='table-auto w-full border-collapse', index=True)
         summary_html += "<h3 class='text-xl font-bold mt-4 mb-2'>Dữ liệu mẫu (5 hàng đầu)</h3>"
         summary_html += df.head().to_html(classes='table-auto w-full border-collapse', index=False)
+
         return summary_html
     except Exception as e:
         logger.error(f"❌ Error processing EMR file: {str(e)}")
         return None
 
 
+# ==========================================================
+# 🌐 ROUTES
+# ==========================================================
 @app.route('/')
 def index():
     return render_template('index.html')
@@ -123,7 +149,8 @@ def login():
 
 @app.route('/logout', methods=['GET', 'POST'])
 def logout():
-    session.clear()
+    session.pop('logged_in', None)
+    session.pop('user', None)
     return redirect(url_for('index'))
 
 
@@ -143,12 +170,16 @@ def emr_profile():
 
     filename = None
     summary = None
+
     if request.method == 'POST':
-        file = request.files.get('file')
-        if not file or file.filename == '':
+        if 'file' not in request.files:
+            flash('Không tìm thấy file trong yêu cầu.', 'danger')
+            return redirect(request.url)
+        file = request.files['file']
+        if file.filename == '':
             flash('Chưa chọn file.', 'danger')
             return redirect(request.url)
-        if allowed_file(file.filename):
+        if file and allowed_file(file.filename):
             filename = secure_filename(file.filename)
             file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
             try:
@@ -169,7 +200,7 @@ def emr_profile():
 
 
 # ==========================================================
-# 🔧 EMR Prediction Route (Post/Redirect/Get + safe model)
+# 🔮 EMR PREDICTION (Post/Redirect/Get pattern)
 # ==========================================================
 @app.route('/emr_prediction', methods=['GET', 'POST'])
 def emr_prediction():
@@ -178,14 +209,17 @@ def emr_prediction():
         return redirect(url_for('login'))
 
     if request.method == 'POST':
-        file = request.files.get('file')
-        if not file or file.filename == '':
+        if 'file' not in request.files:
+            flash('Không tìm thấy file trong yêu cầu.', 'danger')
+            return redirect(url_for('emr_prediction'))
+        file = request.files['file']
+        if file.filename == '':
             flash('Chưa chọn file.', 'danger')
             return redirect(url_for('emr_prediction'))
-
-        if allowed_file(file.filename):
+        if file and allowed_file(file.filename):
             filename = secure_filename(file.filename)
             file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+
             try:
                 file.save(file_path)
                 img_array = preprocess_image(file_path)
@@ -200,9 +234,9 @@ def emr_prediction():
                         flash('Không thể tải mô hình AI. Vui lòng thử lại sau.', 'danger')
                         return redirect(url_for('emr_prediction'))
 
-                prediction = model.predict(img_array)
-                result = 'Nodule' if prediction[0][0] > 0.5 else 'Non-nodule'
-                probability = float(prediction[0][0])
+                pred = model.predict(img_array)
+                result = 'Nodule' if pred[0][0] > 0.5 else 'Non-nodule'
+                probability = float(pred[0][0])
 
                 session['prediction_result'] = {
                     'result': result,
@@ -212,7 +246,6 @@ def emr_prediction():
                     'mime_type': mimetypes.guess_type(file_path)[0] or 'image/jpeg'
                 }
 
-                # Redirect to avoid ERR_CACHE_MISS
                 return redirect(url_for('emr_prediction'))
 
             except Exception as e:
@@ -224,6 +257,7 @@ def emr_prediction():
             return redirect(url_for('emr_prediction'))
 
     prediction_data = session.pop('prediction_result', None)
+
     return render_template(
         'emr_prediction.html',
         prediction=prediction_data,
@@ -234,13 +268,9 @@ def emr_prediction():
     )
 
 
-# Disable caching to prevent resubmission
-@app.after_request
-def add_header(response):
-    response.cache_control.no_store = True
-    return response
-
-
+# ==========================================================
+# 🚀 RUN APP
+# ==========================================================
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 10000))
     app.run(host='0.0.0.0', port=port, debug=False)
