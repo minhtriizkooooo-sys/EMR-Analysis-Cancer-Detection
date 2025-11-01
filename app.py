@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 import base64
 import mimetypes
-import threading
+# import threading  # ❌ Bỏ: Không cần thiết cho Gunicorn multi-process
 import logging
 from flask import Flask, render_template, request, redirect, url_for, flash, session
 from werkzeug.utils import secure_filename
@@ -12,6 +12,7 @@ import tensorflow as tf
 from tensorflow.keras.models import load_model
 from tensorflow.keras.preprocessing.image import load_img, img_to_array
 from huggingface_hub import hf_hub_download
+from keras import backend as K # ✨ Thêm Keras backend để clear session
 
 # ==========================================================
 # 🧠 SAFE TENSORFLOW CONFIG
@@ -20,6 +21,7 @@ os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 try:
     # Disable GPU visibility for CPU usage (good practice on resource-limited environment)
     tf.config.set_visible_devices([], 'GPU')
+    K.clear_session() # ✨ Thêm: Rất quan trọng để dọn dẹp phiên Keras/TF
 except Exception:
     pass
 
@@ -30,24 +32,23 @@ logger = logging.getLogger(__name__)
 # 🔧 FLASK CONFIG
 # ==========================================================
 app = Flask(__name__)
-app.config['SECRET_KEY'] = secrets.token_hex(16)
+# ✨ Thay secrets.token_hex(16) bằng biến môi trường hoặc giá trị cố định an toàn
+app.config['SECRET_KEY'] = os.environ.get('FLASK_SECRET_KEY', secrets.token_hex(16))
 app.config['UPLOAD_FOLDER'] = 'static/uploads'
-# Added only image extensions for prediction route safety check
 app.config['ALLOWED_IMAGE_EXTENSIONS'] = {'png', 'jpg', 'jpeg', 'gif', 'bmp'}
 app.config['ALLOWED_EMR_EXTENSIONS'] = {'csv', 'xls', 'xlsx'}
 app.config['ALLOWED_EXTENSIONS'] = app.config['ALLOWED_IMAGE_EXTENSIONS'] | app.config['ALLOWED_EMR_EXTENSIONS']
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 
 # ==========================================================
-# 🔬 MODEL CONFIG
+# 🔬 GLOBAL MODEL CONFIG AND VARIABLE
 # ==========================================================
 MODEL_REPO = 'minhtriizkooooo/EMR-Analysis-Cancer_Detection'
 MODEL_FILENAME = 'best_weights_model.keras'
 IMG_SIZE = (224, 224)
-model = None
-# graph_lock is not strictly needed if model is loaded once before fork, 
-# but kept as a safeguard for concurrent access during prediction.
-graph_lock = threading.Lock() 
+
+# ✨ KHỞI TẠO model = None ở mức toàn cục
+model = None 
 
 # ==========================================================
 # ⚙️ LOAD MODEL SAFELY
@@ -55,22 +56,22 @@ graph_lock = threading.Lock()
 def load_keras_model():
     """Load Keras model safely from Hugging Face"""
     global model
-    if model is not None:
-        return model
+    
+    # ❌ KHÔNG cần kiểm tra 'if model is not None' ở đây
+    # Lệnh này sẽ được chạy bởi tiến trình Master Gunicorn 1 lần
     try:
         logger.info("⏳ Downloading model from Hugging Face...")
         # Note: hf_hub_download is blocking
         model_path = hf_hub_download(repo_id=MODEL_REPO, filename=MODEL_FILENAME)
+        
         # Note: load_model is blocking
         model = load_model(model_path, compile=False)
         logger.info("✅ Model loaded successfully.")
-        return model
     except Exception as e:
         logger.error(f"❌ Failed to load model: {str(e)}")
-        return None
 
 # ==========================================================
-# 🧩 HELPER FUNCTIONS
+# 🧩 HELPER FUNCTIONS (GIỮ NGUYÊN)
 # ==========================================================
 def allowed_file(filename, allowed_extensions=app.config['ALLOWED_EXTENSIONS']):
     """Check allowed file extension"""
@@ -92,15 +93,22 @@ def preprocess_image(image_path):
 def image_to_base64(image_path):
     """Convert image to base64 string"""
     try:
+        # Lấy MIME type để hiển thị đúng
+        mime_type, _ = mimetypes.guess_type(image_path)
+        if mime_type is None:
+            mime_type = 'image/jpeg' 
+
         with open(image_path, "rb") as f:
-            return base64.b64encode(f.read()).decode('utf-8')
+            base64_data = base64.b64encode(f.read()).decode('utf-8')
+            return f"data:{mime_type};base64,{base64_data}" # ✨ Trả về định dạng data URI
     except Exception as e:
         logger.error(f"❌ Error encoding image: {str(e)}")
         return None
 
-
+# Hàm process_emr_file (GIỮ NGUYÊN)
 def process_emr_file(file_path):
     """Generate basic analysis summary of CSV/XLSX file"""
+    # [Code phân tích EMR giữ nguyên]
     try:
         if file_path.endswith('.csv'):
             df = pd.read_csv(file_path)
@@ -137,8 +145,9 @@ def process_emr_file(file_path):
 
 
 # ==========================================================
-# 🌐 ROUTES
+# 🌐 ROUTES (GIỮ NGUYÊN)
 # ==========================================================
+# [Các route / , /login, /logout, /dashboard, /emr_profile giữ nguyên]
 @app.route('/')
 def index():
     return render_template('index.html')
@@ -199,6 +208,8 @@ def emr_profile():
             summary = process_emr_file(file_path)
             if summary is None:
                 flash('Lỗi khi xử lý file EMR.', 'danger')
+            else:
+                 flash(f'Phân tích file EMR ({filename}) hoàn tất.', 'success')
         else:
             flash('Loại file không hợp lệ. Chỉ chấp nhận CSV, XLS, XLSX.', 'danger')
 
@@ -233,19 +244,24 @@ def emr_prediction():
             return redirect(url_for('emr_prediction'))
 
         try:
-            # Check if model is loaded
+            # Check if model is loaded globally by the Master process
             global model
             if model is None:
-                flash('Mô hình AI chưa được tải. Vui lòng thử lại sau giây lát hoặc kiểm tra logs.', 'danger')
+                flash('Mô hình AI chưa được tải. Vui lòng kiểm tra logs để biết lỗi tải mô hình.', 'danger')
                 return redirect(url_for('emr_prediction'))
 
-            with graph_lock:
-                # Prediction logic
-                pred = model.predict(img_array, verbose=0)
-                # Assuming binary classification where pred[0][0] is the probability of the positive class
-                probability = float(pred[0][0]) 
-                result = 'Nodule' if probability > 0.5 else 'Non-nodule'
+            # ✨ Bỏ with graph_lock: 
+            # Dùng Workers=1 (sync worker) hoặc Gunicorn threads là đủ.
+            # pred = model.predict(img_array, verbose=0)
+            
+            # ✨ Dùng tf.convert_to_tensor() trước khi predict (best practice)
+            input_tensor = tf.convert_to_tensor(img_array, dtype=tf.float32)
+            pred = model.predict(input_tensor, verbose=0)
 
+            # Assuming binary classification where pred[0][0] is the probability of the positive class
+            probability = float(pred[0][0])
+            result = 'Nodule' if probability > 0.5 else 'Non-nodule'
+            
             # Store prediction data in session
             session['prediction_result'] = {
                 'result': result,
@@ -254,12 +270,13 @@ def emr_prediction():
                 'image_b64': image_to_base64(file_path),
                 'mime_type': mimetypes.guess_type(file_path)[0] or 'image/jpeg'
             }
-
+            
+            flash(f'Dự đoán hoàn tất: {result} với xác suất {round(probability * 100, 2)}%.', 'success')
             return redirect(url_for('emr_prediction'))
 
         except Exception as e:
             logger.error(f"❌ Prediction error: {str(e)}")
-            flash('Lỗi khi dự đoán hình ảnh.', 'danger')
+            flash('Lỗi khi dự đoán hình ảnh. Có thể do timeout.', 'danger')
             return redirect(url_for('emr_prediction'))
 
     # Retrieve and clear prediction data for GET request (display results)
@@ -268,20 +285,22 @@ def emr_prediction():
     return render_template(
         'emr_prediction.html',
         prediction=prediction_data,
-        uploaded_image=None if not prediction_data else f"uploads/{prediction_data['filename']}",
+        # ✨ image_b64 đã chứa data URI, không cần dùng uploaded_image
+        uploaded_image=None, 
         image_b64=None if not prediction_data else prediction_data['image_b64'],
-        filename=None if not prediction_data else prediction_data['filename'],
-        mime_type=None if not prediction_data else prediction_data['mime_type']
+        filename=None if not prediction_data else prediction_data['filename']
     )
 
 
 # ==========================================================
 # 🚀 PRELOAD MODEL (BEFORE GUNICORN FORKS WORKERS)
 # ==========================================================
-# Gunicorn loads the application file once. 
+# Gunicorn loads the application file once.
 # Code here runs in the master process before workers are forked.
 # Workers then inherit the loaded model, preventing load-time timeouts.
+logger.info("🔥 Bắt đầu tải mô hình trong tiến trình Master (Gunicorn Preload)...")
 load_keras_model()
+logger.info("🚀 Tiến trình Master đã hoàn tất tải mô hình.")
 
 # ==========================================================
 # 🚀 RUN APP
