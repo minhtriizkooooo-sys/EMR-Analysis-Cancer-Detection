@@ -8,4 +8,4 @@ Flask==3.0.3
 gunicorn==23.0.0
 openpyxl==3.1.5
 Werkzeug==3.0.4
-protobuf==4.25.3
+protobuf>=5.28.0
