@@ -18,6 +18,7 @@ from huggingface_hub import hf_hub_download
 # ==========================================================
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 try:
+    # Disable GPU visibility for CPU usage (good practice on resource-limited environment)
     tf.config.set_visible_devices([], 'GPU')
 except Exception:
     pass
@@ -31,9 +32,10 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 app.config['SECRET_KEY'] = secrets.token_hex(16)
 app.config['UPLOAD_FOLDER'] = 'static/uploads'
-app.config['ALLOWED_EXTENSIONS'] = {
-    'png', 'jpg', 'jpeg', 'gif', 'bmp', 'csv', 'xls', 'xlsx'
-}
+# Added only image extensions for prediction route safety check
+app.config['ALLOWED_IMAGE_EXTENSIONS'] = {'png', 'jpg', 'jpeg', 'gif', 'bmp'}
+app.config['ALLOWED_EMR_EXTENSIONS'] = {'csv', 'xls', 'xlsx'}
+app.config['ALLOWED_EXTENSIONS'] = app.config['ALLOWED_IMAGE_EXTENSIONS'] | app.config['ALLOWED_EMR_EXTENSIONS']
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 
 # ==========================================================
@@ -43,7 +45,9 @@ MODEL_REPO = 'minhtriizkooooo/EMR-Analysis-Cancer_Detection'
 MODEL_FILENAME = 'best_weights_model.keras'
 IMG_SIZE = (224, 224)
 model = None
-graph_lock = threading.Lock()
+# graph_lock is not strictly needed if model is loaded once before fork, 
+# but kept as a safeguard for concurrent access during prediction.
+graph_lock = threading.Lock() 
 
 # ==========================================================
 # ⚙️ LOAD MODEL SAFELY
@@ -55,7 +59,9 @@ def load_keras_model():
         return model
     try:
         logger.info("⏳ Downloading model from Hugging Face...")
+        # Note: hf_hub_download is blocking
         model_path = hf_hub_download(repo_id=MODEL_REPO, filename=MODEL_FILENAME)
+        # Note: load_model is blocking
         model = load_model(model_path, compile=False)
         logger.info("✅ Model loaded successfully.")
         return model
@@ -63,16 +69,12 @@ def load_keras_model():
         logger.error(f"❌ Failed to load model: {str(e)}")
         return None
 
-
-# preload model asynchronously
-threading.Thread(target=load_keras_model, daemon=True).start()
-
 # ==========================================================
 # 🧩 HELPER FUNCTIONS
 # ==========================================================
-def allowed_file(filename):
+def allowed_file(filename, allowed_extensions=app.config['ALLOWED_EXTENSIONS']):
     """Check allowed file extension"""
-    return '.' in filename and filename.rsplit('.', 1)[1].lower() in app.config['ALLOWED_EXTENSIONS']
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in allowed_extensions
 
 
 def preprocess_image(image_path):
@@ -148,6 +150,7 @@ def login():
     if request.method == 'POST':
         user_id = request.form.get('userID')
         password = request.form.get('password')
+        # Placeholder for real authentication
         if user_id == 'user_demo' and password == 'Test@123456':
             session['logged_in'] = True
             session['user'] = user_id
@@ -188,13 +191,16 @@ def emr_profile():
             flash('Chưa chọn file.', 'danger')
             return redirect(request.url)
 
-        if allowed_file(file.filename):
+        # Check for EMR file extensions (CSV/XLSX)
+        if allowed_file(file.filename, app.config['ALLOWED_EMR_EXTENSIONS']):
             filename = secure_filename(file.filename)
             file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
             file.save(file_path)
             summary = process_emr_file(file_path)
+            if summary is None:
+                flash('Lỗi khi xử lý file EMR.', 'danger')
         else:
-            flash('Loại file không hợp lệ.', 'danger')
+            flash('Loại file không hợp lệ. Chỉ chấp nhận CSV, XLS, XLSX.', 'danger')
 
     return render_template('emr_profile.html', filename=filename, summary=summary)
 
@@ -212,7 +218,8 @@ def emr_prediction():
             flash('Chưa chọn file ảnh.', 'danger')
             return redirect(url_for('emr_prediction'))
 
-        if not allowed_file(file.filename):
+        # Check for image file extensions
+        if not allowed_file(file.filename, app.config['ALLOWED_IMAGE_EXTENSIONS']):
             flash('Chỉ chấp nhận file ảnh (PNG, JPG, JPEG, GIF, BMP).', 'danger')
             return redirect(url_for('emr_prediction'))
 
@@ -226,18 +233,20 @@ def emr_prediction():
             return redirect(url_for('emr_prediction'))
 
         try:
-            with graph_lock:
-                global model
-                if model is None:
-                    model = load_keras_model()
-                    if model is None:
-                        flash('Không thể tải mô hình AI.', 'danger')
-                        return redirect(url_for('emr_prediction'))
+            # Check if model is loaded
+            global model
+            if model is None:
+                flash('Mô hình AI chưa được tải. Vui lòng thử lại sau giây lát hoặc kiểm tra logs.', 'danger')
+                return redirect(url_for('emr_prediction'))
 
+            with graph_lock:
+                # Prediction logic
                 pred = model.predict(img_array, verbose=0)
-                probability = float(pred[0][0])
+                # Assuming binary classification where pred[0][0] is the probability of the positive class
+                probability = float(pred[0][0]) 
                 result = 'Nodule' if probability > 0.5 else 'Non-nodule'
 
+            # Store prediction data in session
             session['prediction_result'] = {
                 'result': result,
                 'probability': round(probability * 100, 2),
@@ -253,6 +262,7 @@ def emr_prediction():
             flash('Lỗi khi dự đoán hình ảnh.', 'danger')
             return redirect(url_for('emr_prediction'))
 
+    # Retrieve and clear prediction data for GET request (display results)
     prediction_data = session.pop('prediction_result', None)
 
     return render_template(
@@ -264,6 +274,14 @@ def emr_prediction():
         mime_type=None if not prediction_data else prediction_data['mime_type']
     )
 
+
+# ==========================================================
+# 🚀 PRELOAD MODEL (BEFORE GUNICORN FORKS WORKERS)
+# ==========================================================
+# Gunicorn loads the application file once. 
+# Code here runs in the master process before workers are forked.
+# Workers then inherit the loaded model, preventing load-time timeouts.
+load_keras_model()
 
 # ==========================================================
 # 🚀 RUN APP
