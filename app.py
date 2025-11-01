@@ -17,52 +17,51 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
-app.config['SECRET_KEY'] = secrets.token_hex(16)  # Generate a secure key
+app.config['SECRET_KEY'] = secrets.token_hex(16)
 app.config['UPLOAD_FOLDER'] = 'static/uploads'
 app.config['ALLOWED_EXTENSIONS'] = {'png', 'jpg', 'jpeg', 'gif', 'bmp', 'csv', 'xls', 'xlsx'}
-app.config['SESSION_TYPE'] = 'filesystem'  # For session management
+app.config['SESSION_TYPE'] = 'filesystem'
 
-# Ensure upload folder exists
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 
+# =========================================
 # Model configuration
+# =========================================
 MODEL_REPO = 'minhtriizkooooo/EMR-Analysis-Cancer_Detection'
 MODEL_FILENAME = 'best_weights_model.keras'
-IMG_SIZE = (224, 224)  # Model expects 224x224 images
+IMG_SIZE = (224, 224)
 
-# Load the model from Hugging Face
+model = None  # lazy-loaded later
+
+
 def load_keras_model():
+    """Download and load model from Hugging Face Hub."""
     try:
         logger.info("⏳ Loading model from Hugging Face...")
         model_path = hf_hub_download(repo_id=MODEL_REPO, filename=MODEL_FILENAME)
-        model = load_model(model_path)
+        loaded = load_model(model_path)
         logger.info("✅ Model loaded successfully")
-        model.summary()
-        return model
+        return loaded
     except Exception as e:
         logger.error(f"❌ Error loading model: {str(e)}")
         return None
 
-# Initialize model as None for lazy loading
-model = None
 
-# Function to check allowed file extensions
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in app.config['ALLOWED_EXTENSIONS']
 
-# Preprocess uploaded image
+
 def preprocess_image(image_path):
     try:
         img = load_img(image_path, target_size=IMG_SIZE)
         img_array = img_to_array(img)
-        img_array = np.expand_dims(img_array, axis=0)
-        img_array = img_array / 255.0
+        img_array = np.expand_dims(img_array, axis=0) / 255.0
         return img_array
     except Exception as e:
         logger.error(f"❌ Error preprocessing image: {str(e)}")
         return None
 
-# Encode image to base64
+
 def image_to_base64(image_path):
     try:
         with open(image_path, "rb") as image_file:
@@ -71,7 +70,7 @@ def image_to_base64(image_path):
         logger.error(f"❌ Error encoding image to base64: {str(e)}")
         return None
 
-# Process EMR CSV/Excel file
+
 def process_emr_file(file_path):
     try:
         if file_path.endswith('.csv'):
@@ -124,8 +123,7 @@ def login():
 
 @app.route('/logout', methods=['GET', 'POST'])
 def logout():
-    session.pop('logged_in', None)
-    session.pop('user', None)
+    session.clear()
     return redirect(url_for('index'))
 
 
@@ -142,17 +140,15 @@ def emr_profile():
     if not session.get('logged_in'):
         flash('Vui lòng đăng nhập để truy cập phân tích hồ sơ EMR.', 'danger')
         return redirect(url_for('login'))
+
     filename = None
     summary = None
     if request.method == 'POST':
-        if 'file' not in request.files:
-            flash('Không tìm thấy file trong yêu cầu.', 'danger')
-            return redirect(request.url)
-        file = request.files['file']
-        if file.filename == '':
+        file = request.files.get('file')
+        if not file or file.filename == '':
             flash('Chưa chọn file.', 'danger')
             return redirect(request.url)
-        if file and allowed_file(file.filename):
+        if allowed_file(file.filename):
             filename = secure_filename(file.filename)
             file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
             try:
@@ -168,11 +164,12 @@ def emr_profile():
         else:
             flash('Loại file không hợp lệ. Chỉ chấp nhận CSV, XLS, XLSX.', 'danger')
             return redirect(request.url)
+
     return render_template('emr_profile.html', filename=filename, summary=summary)
 
 
 # ==========================================================
-# 🔧 SỬA PHẦN DỰ ĐOÁN (POST/REDIRECT/GET fix ERR_CACHE_MISS)
+# 🔧 EMR Prediction Route (Post/Redirect/Get + safe model)
 # ==========================================================
 @app.route('/emr_prediction', methods=['GET', 'POST'])
 def emr_prediction():
@@ -181,14 +178,12 @@ def emr_prediction():
         return redirect(url_for('login'))
 
     if request.method == 'POST':
-        if 'file' not in request.files:
-            flash('Không tìm thấy file trong yêu cầu.', 'danger')
-            return redirect(url_for('emr_prediction'))
-        file = request.files['file']
-        if file.filename == '':
+        file = request.files.get('file')
+        if not file or file.filename == '':
             flash('Chưa chọn file.', 'danger')
             return redirect(url_for('emr_prediction'))
-        if file and allowed_file(file.filename):
+
+        if allowed_file(file.filename):
             filename = secure_filename(file.filename)
             file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
             try:
@@ -205,11 +200,10 @@ def emr_prediction():
                         flash('Không thể tải mô hình AI. Vui lòng thử lại sau.', 'danger')
                         return redirect(url_for('emr_prediction'))
 
-                pred = model.predict(img_array)
-                result = 'Nodule' if pred[0][0] > 0.5 else 'Non-nodule'
-                probability = float(pred[0][0])
+                prediction = model.predict(img_array)
+                result = 'Nodule' if prediction[0][0] > 0.5 else 'Non-nodule'
+                probability = float(prediction[0][0])
 
-                # Lưu dữ liệu vào session để GET hiển thị
                 session['prediction_result'] = {
                     'result': result,
                     'probability': probability,
@@ -218,6 +212,7 @@ def emr_prediction():
                     'mime_type': mimetypes.guess_type(file_path)[0] or 'image/jpeg'
                 }
 
+                # Redirect to avoid ERR_CACHE_MISS
                 return redirect(url_for('emr_prediction'))
 
             except Exception as e:
@@ -228,9 +223,7 @@ def emr_prediction():
             flash('Loại file không hợp lệ. Chỉ chấp nhận PNG, JPG, JPEG, GIF, BMP.', 'danger')
             return redirect(url_for('emr_prediction'))
 
-    # Khi GET, lấy kết quả từ session (sau redirect)
     prediction_data = session.pop('prediction_result', None)
-
     return render_template(
         'emr_prediction.html',
         prediction=prediction_data,
@@ -239,6 +232,13 @@ def emr_prediction():
         filename=None if not prediction_data else prediction_data['filename'],
         mime_type=None if not prediction_data else prediction_data['mime_type']
     )
+
+
+# Disable caching to prevent resubmission
+@app.after_request
+def add_header(response):
+    response.cache_control.no_store = True
+    return response
 
 
 if __name__ == '__main__':
