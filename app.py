@@ -34,7 +34,6 @@ app.config['UPLOAD_FOLDER'] = 'static/uploads'
 app.config['ALLOWED_EXTENSIONS'] = {
     'png', 'jpg', 'jpeg', 'gif', 'bmp', 'csv', 'xls', 'xlsx'
 }
-app.config['SESSION_TYPE'] = 'filesystem'
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 
 # ==========================================================
@@ -46,9 +45,11 @@ IMG_SIZE = (224, 224)
 model = None
 graph_lock = threading.Lock()
 
-
+# ==========================================================
+# ⚙️ LOAD MODEL SAFELY
+# ==========================================================
 def load_keras_model():
-    """Load model safely from Hugging Face"""
+    """Load Keras model safely from Hugging Face"""
     global model
     if model is not None:
         return model
@@ -63,17 +64,19 @@ def load_keras_model():
         return None
 
 
-# preload model
+# preload model asynchronously
 threading.Thread(target=load_keras_model, daemon=True).start()
 
 # ==========================================================
-# 🧰 HELPER FUNCTIONS
+# 🧩 HELPER FUNCTIONS
 # ==========================================================
 def allowed_file(filename):
+    """Check allowed file extension"""
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in app.config['ALLOWED_EXTENSIONS']
 
 
 def preprocess_image(image_path):
+    """Prepare image for model input"""
     try:
         img = load_img(image_path, target_size=IMG_SIZE)
         img_array = img_to_array(img)
@@ -85,6 +88,7 @@ def preprocess_image(image_path):
 
 
 def image_to_base64(image_path):
+    """Convert image to base64 string"""
     try:
         with open(image_path, "rb") as f:
             return base64.b64encode(f.read()).decode('utf-8')
@@ -94,36 +98,37 @@ def image_to_base64(image_path):
 
 
 def process_emr_file(file_path):
+    """Generate basic analysis summary of CSV/XLSX file"""
     try:
         if file_path.endswith('.csv'):
             df = pd.read_csv(file_path)
         else:
             df = pd.read_excel(file_path)
 
-        summary_html = ""
-        summary_html += "<h3 class='text-xl font-bold mb-2'>Kích thước dữ liệu</h3>"
-        summary_html += f"<p>Số hàng: {df.shape[0]}</p>"
-        summary_html += f"<p>Số cột: {df.shape[1]}</p>"
+        html = ""
+        html += "<h3 class='text-xl font-bold mb-2'>📊 Kích thước dữ liệu</h3>"
+        html += f"<p>Số hàng: {df.shape[0]}</p>"
+        html += f"<p>Số cột: {df.shape[1]}</p>"
 
-        summary_html += "<h3 class='text-xl font-bold mt-4 mb-2'>Thông tin cột</h3>"
+        html += "<h3 class='text-xl font-bold mt-4 mb-2'>🔠 Thông tin cột</h3>"
         col_info = pd.DataFrame({
             'Kiểu dữ liệu': df.dtypes,
             'Giá trị thiếu': df.isnull().sum(),
             'Giá trị duy nhất': df.nunique()
         })
-        summary_html += col_info.to_html(classes='table-auto w-full border-collapse', index=True)
+        html += col_info.to_html(classes='table-auto w-full border', index=True)
 
-        summary_html += "<h3 class='text-xl font-bold mt-4 mb-2'>Thống kê mô tả</h3>"
-        summary_html += df.describe(include='all').to_html(classes='table-auto w-full border-collapse')
+        html += "<h3 class='text-xl font-bold mt-4 mb-2'>📈 Thống kê mô tả</h3>"
+        html += df.describe(include='all').to_html(classes='table-auto w-full border')
 
-        summary_html += "<h3 class='text-xl font-bold mt-4 mb-2'>Tỷ lệ giá trị thiếu (%)</h3>"
-        missing_perc = (df.isnull().mean() * 100).to_frame(name='Tỷ lệ thiếu (%)').round(2)
-        summary_html += missing_perc.to_html(classes='table-auto w-full border-collapse', index=True)
+        html += "<h3 class='text-xl font-bold mt-4 mb-2'>⚠️ Tỷ lệ giá trị thiếu (%)</h3>"
+        missing = (df.isnull().mean() * 100).to_frame(name='Tỷ lệ thiếu (%)').round(2)
+        html += missing.to_html(classes='table-auto w-full border')
 
-        summary_html += "<h3 class='text-xl font-bold mt-4 mb-2'>Dữ liệu mẫu (5 hàng đầu)</h3>"
-        summary_html += df.head().to_html(classes='table-auto w-full border-collapse', index=False)
+        html += "<h3 class='text-xl font-bold mt-4 mb-2'>🧾 Dữ liệu mẫu (5 hàng đầu)</h3>"
+        html += df.head().to_html(classes='table-auto w-full border', index=False)
 
-        return summary_html
+        return html
     except Exception as e:
         logger.error(f"❌ Error processing EMR file: {str(e)}")
         return None
@@ -139,6 +144,7 @@ def index():
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
+    """Simple demo login"""
     if request.method == 'POST':
         user_id = request.form.get('userID')
         password = request.form.get('password')
@@ -154,8 +160,8 @@ def login():
 
 @app.route('/logout')
 def logout():
-    session.pop('logged_in', None)
-    session.pop('user', None)
+    """Logout and clear session"""
+    session.clear()
     return redirect(url_for('index'))
 
 
@@ -169,24 +175,20 @@ def dashboard():
 
 @app.route('/emr_profile', methods=['GET', 'POST'])
 def emr_profile():
+    """Handle EMR profiling"""
     if not session.get('logged_in'):
         flash('Vui lòng đăng nhập để truy cập phân tích hồ sơ EMR.', 'danger')
         return redirect(url_for('login'))
 
-    filename = None
-    summary = None
+    filename, summary = None, None
 
     if request.method == 'POST':
-        if 'file' not in request.files:
-            flash('Không tìm thấy file.', 'danger')
-            return redirect(request.url)
-
-        file = request.files['file']
-        if file.filename == '':
+        file = request.files.get('file')
+        if not file or file.filename == '':
             flash('Chưa chọn file.', 'danger')
             return redirect(request.url)
 
-        if file and allowed_file(file.filename):
+        if allowed_file(file.filename):
             filename = secure_filename(file.filename)
             file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
             file.save(file_path)
@@ -197,11 +199,9 @@ def emr_profile():
     return render_template('emr_profile.html', filename=filename, summary=summary)
 
 
-# ==========================================================
-# 🔮 EMR PREDICTION — FIXED & STABLE
-# ==========================================================
 @app.route('/emr_prediction', methods=['GET', 'POST'])
 def emr_prediction():
+    """Handle EMR image prediction"""
     if not session.get('logged_in'):
         flash('Vui lòng đăng nhập để truy cập trang dự đoán.', 'danger')
         return redirect(url_for('login'))
@@ -212,45 +212,45 @@ def emr_prediction():
             flash('Chưa chọn file ảnh.', 'danger')
             return redirect(url_for('emr_prediction'))
 
-        if allowed_file(file.filename):
-            filename = secure_filename(file.filename)
-            file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-            file.save(file_path)
-
-            img_array = preprocess_image(file_path)
-            if img_array is None:
-                flash('Lỗi khi xử lý hình ảnh.', 'danger')
-                return redirect(url_for('emr_prediction'))
-
-            try:
-                with graph_lock:
-                    global model
-                    if model is None:
-                        model = load_keras_model()
-                        if model is None:
-                            flash('Không thể tải mô hình AI.', 'danger')
-                            return redirect(url_for('emr_prediction'))
-
-                    pred = model.predict(img_array, verbose=0)
-                    probability = float(pred[0][0])
-                    result = 'Nodule' if probability > 0.5 else 'Non-nodule'
-
-                session['prediction_result'] = {
-                    'result': result,
-                    'probability': round(probability * 100, 2),
-                    'filename': filename,
-                    'image_b64': image_to_base64(file_path),
-                    'mime_type': mimetypes.guess_type(file_path)[0] or 'image/jpeg'
-                }
-
-                return redirect(url_for('emr_prediction'))
-
-            except Exception as e:
-                logger.error(f"❌ Prediction error: {str(e)}")
-                flash('Lỗi khi dự đoán hình ảnh.', 'danger')
-                return redirect(url_for('emr_prediction'))
-        else:
+        if not allowed_file(file.filename):
             flash('Chỉ chấp nhận file ảnh (PNG, JPG, JPEG, GIF, BMP).', 'danger')
+            return redirect(url_for('emr_prediction'))
+
+        filename = secure_filename(file.filename)
+        file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+        file.save(file_path)
+
+        img_array = preprocess_image(file_path)
+        if img_array is None:
+            flash('Lỗi khi xử lý hình ảnh.', 'danger')
+            return redirect(url_for('emr_prediction'))
+
+        try:
+            with graph_lock:
+                global model
+                if model is None:
+                    model = load_keras_model()
+                    if model is None:
+                        flash('Không thể tải mô hình AI.', 'danger')
+                        return redirect(url_for('emr_prediction'))
+
+                pred = model.predict(img_array, verbose=0)
+                probability = float(pred[0][0])
+                result = 'Nodule' if probability > 0.5 else 'Non-nodule'
+
+            session['prediction_result'] = {
+                'result': result,
+                'probability': round(probability * 100, 2),
+                'filename': filename,
+                'image_b64': image_to_base64(file_path),
+                'mime_type': mimetypes.guess_type(file_path)[0] or 'image/jpeg'
+            }
+
+            return redirect(url_for('emr_prediction'))
+
+        except Exception as e:
+            logger.error(f"❌ Prediction error: {str(e)}")
+            flash('Lỗi khi dự đoán hình ảnh.', 'danger')
             return redirect(url_for('emr_prediction'))
 
     prediction_data = session.pop('prediction_result', None)
