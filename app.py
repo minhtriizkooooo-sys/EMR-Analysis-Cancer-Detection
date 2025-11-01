@@ -4,15 +4,15 @@ import numpy as np
 import pandas as pd
 import base64
 import mimetypes
-# import threading  # ❌ Bỏ: Không cần thiết cho Gunicorn multi-process
 import logging
+import gc # 👈 THÊM: Python Garbage Collector
 from flask import Flask, render_template, request, redirect, url_for, flash, session
 from werkzeug.utils import secure_filename
 import tensorflow as tf
 from tensorflow.keras.models import load_model
 from tensorflow.keras.preprocessing.image import load_img, img_to_array
 from huggingface_hub import hf_hub_download
-from keras import backend as K # ✨ Thêm Keras backend để clear session
+from keras import backend as K
 
 # ==========================================================
 # 🧠 SAFE TENSORFLOW CONFIG
@@ -21,7 +21,7 @@ os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 try:
     # Disable GPU visibility for CPU usage (good practice on resource-limited environment)
     tf.config.set_visible_devices([], 'GPU')
-    K.clear_session() # ✨ Thêm: Rất quan trọng để dọn dẹp phiên Keras/TF
+    K.clear_session() # Rất tốt khi clear ở đây, nhưng cần clear cả sau predict
 except Exception:
     pass
 
@@ -57,8 +57,6 @@ def load_keras_model():
     """Load Keras model safely from Hugging Face"""
     global model
     
-    # ❌ KHÔNG cần kiểm tra 'if model is not None' ở đây
-    # Lệnh này sẽ được chạy bởi tiến trình Master Gunicorn 1 lần
     try:
         logger.info("⏳ Downloading model from Hugging Face...")
         # Note: hf_hub_download is blocking
@@ -145,7 +143,7 @@ def process_emr_file(file_path):
 
 
 # ==========================================================
-# 🌐 ROUTES (GIỮ NGUYÊN)
+# 🌐 ROUTES (ĐÃ CẬP NHẬT)
 # ==========================================================
 # [Các route / , /login, /logout, /dashboard, /emr_profile giữ nguyên]
 @app.route('/')
@@ -209,7 +207,7 @@ def emr_profile():
             if summary is None:
                 flash('Lỗi khi xử lý file EMR.', 'danger')
             else:
-                 flash(f'Phân tích file EMR ({filename}) hoàn tất.', 'success')
+                 #flash(f'Phân tích file EMR ({filename}) hoàn tất.', 'success')
         else:
             flash('Loại file không hợp lệ. Chỉ chấp nhận CSV, XLS, XLSX.', 'danger')
 
@@ -252,11 +250,15 @@ def emr_prediction():
 
             # ✨ Bỏ with graph_lock: 
             # Dùng Workers=1 (sync worker) hoặc Gunicorn threads là đủ.
-            # pred = model.predict(img_array, verbose=0)
-            
-            # ✨ Dùng tf.convert_to_tensor() trước khi predict (best practice)
             input_tensor = tf.convert_to_tensor(img_array, dtype=tf.float32)
+            # 💡 BƯỚC QUAN TRỌNG: Gọi predict
             pred = model.predict(input_tensor, verbose=0)
+            
+            # 👇 THÊM DỌN DẸP BỘ NHỚ SAU DỰ ĐOÁN
+            K.clear_session() 
+            gc.collect()
+            logger.info("✅ Keras/TF session and Python garbage collected.")
+            # 👆 KẾT THÚC DỌN DẸP BỘ NHỚ
 
             # Assuming binary classification where pred[0][0] is the probability of the positive class
             probability = float(pred[0][0])
@@ -277,6 +279,14 @@ def emr_prediction():
         except Exception as e:
             logger.error(f"❌ Prediction error: {str(e)}")
             flash('Lỗi khi dự đoán hình ảnh. Có thể do timeout.', 'danger')
+            
+            # 💡 DỌN DẸP BỘ NHỚ KỂ CẢ KHI CÓ LỖI
+            try:
+                K.clear_session()
+                gc.collect()
+            except:
+                pass
+            
             return redirect(url_for('emr_prediction'))
 
     # Retrieve and clear prediction data for GET request (display results)
