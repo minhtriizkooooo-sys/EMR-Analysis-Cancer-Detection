@@ -79,7 +79,15 @@ def dashboard():
         return redirect(url_for("index"))
     return render_template("dashboard.html")
 
-# --- EMR Profiling ---
+# --- EMR Profile Page (GET) ---
+@app.route("/profile_page")
+def emr_profile():
+    if "username" not in session:
+        return redirect(url_for("index"))
+    # Render empty profile page first
+    return render_template("EMR_Profile.html", tables=[], titles=[])
+
+# --- EMR Profiling (POST) ---
 @app.route("/profile", methods=["POST"])
 def profile():
     if "username" not in session:
@@ -88,18 +96,28 @@ def profile():
     try:
         file = request.files.get("csv_file")
         if not file or file.filename == "":
-            return redirect(url_for("dashboard"))
+            return redirect(url_for("emr_profile"))
 
         df = pd.read_csv(file)
         summary = df.describe(include="all").T
-        summary_html = summary.to_html(classes="table table-striped text-sm text-center border-collapse", border=0)
+        summary_html = summary.to_html(
+            classes="table table-striped text-sm text-center border-collapse",
+            border=0
+        )
 
         return render_template("EMR_Profile.html", tables=[summary_html], titles=["EMR Profiling Summary"])
     except Exception as e:
         logging.error(f"Profile error: {e}")
-        return redirect(url_for("dashboard"))
+        return redirect(url_for("emr_profile"))
 
-# --- Prediction ---
+# --- Image Prediction Page (GET) ---
+@app.route("/prediction_page")
+def emr_prediction():
+    if "username" not in session:
+        return redirect(url_for("index"))
+    return render_template("EMR_Prediction.html", image_data=None, prediction=None, confidence=None)
+
+# --- Prediction (POST) ---
 @app.route("/predict", methods=["POST"])
 def predict():
     global model
@@ -109,13 +127,13 @@ def predict():
     try:
         file = request.files.get("image_file")
         if not file or file.filename == "":
-            return redirect(url_for("dashboard"))
+            return redirect(url_for("emr_prediction"))
 
         filename = secure_filename(file.filename)
         filepath = os.path.join("uploads", filename)
         file.save(filepath)
 
-        # --- Preprocess image (Colab standard) ---
+        # --- Preprocess image ---
         img = load_img(filepath, target_size=(240, 240))
         img_array = img_to_array(img)
         img_array = np.expand_dims(img_array, axis=0)
@@ -146,7 +164,7 @@ def predict():
         )
     except Exception as e:
         logging.error(f"Prediction error: {e}")
-        return redirect(url_for("dashboard"))
+        return redirect(url_for("emr_prediction"))
 
 # --- Logout ---
 @app.route("/logout")
