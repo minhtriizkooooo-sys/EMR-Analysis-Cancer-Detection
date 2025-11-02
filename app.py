@@ -2,177 +2,156 @@ import os
 import io
 import base64
 import logging
-import gc
-import numpy as np
 import pandas as pd
-import requests
-from flask import Flask, render_template, request, redirect, url_for, session
+import numpy as np
+from flask import Flask, render_template, request, redirect, url_for, session, flash
 from werkzeug.utils import secure_filename
 from tensorflow.keras.models import load_model
 from tensorflow.keras.preprocessing.image import load_img, img_to_array
-from tensorflow.keras.applications.efficientnet import preprocess_input
+from huggingface_hub import hf_hub_download
 
-# --- Logging ---
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+# --- Logger ---
+logging.basicConfig(level=logging.INFO)
 
-# --- Flask App ---
+# --- Flask app ---
 app = Flask(__name__)
-app.secret_key = "secret123"
+app.secret_key = "supersecretkey"
 
-# --- Directories ---
-os.makedirs("uploads", exist_ok=True)
+# --- Upload folder ---
+UPLOAD_FOLDER = "uploads"
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+
+# --- Model settings ---
+MODEL_REPO = "your_hf_username/your_model_repo"  # Thay bằng HF repo của bạn
+MODEL_FILE = "best_weights_model.keras"
+MODEL_PATH = os.path.join("models", MODEL_FILE)
 os.makedirs("models", exist_ok=True)
 
-# --- Hugging Face model source ---
-HF_MODEL_URL = "https://minhtriizkooooo-emr-analysis-cancer-detection.hf.space/file/models/best_weights_model.keras"
-MODEL_PATH = os.path.join("models", "best_weights_model.keras")
-
-# --- Ensure model exists locally ---
-def download_model():
-    if not os.path.exists(MODEL_PATH):
-        logging.info("Downloading model from Hugging Face Space...")
-        response = requests.get(HF_MODEL_URL, stream=True)
-        if response.status_code == 200:
-            with open(MODEL_PATH, "wb") as f:
-                for chunk in response.iter_content(chunk_size=8192):
-                    f.write(chunk)
-            logging.info("✅ Model downloaded successfully.")
-        else:
-            logging.error(f"❌ Failed to download model. HTTP {response.status_code}")
-            raise RuntimeError("Cannot download model from Hugging Face.")
-
-# --- Load Keras model ---
-def load_trained_model():
-    download_model()
-    logging.info("Loading model...")
-    model = load_model(MODEL_PATH)
-    logging.info("✅ Model loaded successfully.")
-    return model
-
-# --- Lazy loading for performance ---
 model = None
 
-# ================= ROUTES =================
+def download_model_from_hf():
+    """Tải model từ Hugging Face nếu chưa có"""
+    if not os.path.exists(MODEL_PATH):
+        logging.info("Downloading model from Hugging Face...")
+        path = hf_hub_download(repo_id=MODEL_REPO, filename=MODEL_FILE)
+        os.rename(path, MODEL_PATH)
+        logging.info(f"Model downloaded to {MODEL_PATH}")
 
-# --- Home (Login Page) ---
-@app.route("/", methods=["GET"])
+def load_trained_model():
+    global model
+    if model is None:
+        download_model_from_hf()
+        logging.info("Loading Keras model...")
+        model = load_model(MODEL_PATH)
+        logging.info("Model loaded successfully")
+    return model
+
+def preprocess_image(x):
+    """Giống logic Colab: resize, normalize"""
+    x = x / 255.0
+    return x
+
+# --- Routes ---
+@app.route("/", methods=["GET", "POST"])
 def index():
+    if request.method == "POST":
+        username = request.form.get("username")
+        password = request.form.get("password")
+        if username and password:
+            session["user"] = username
+            return redirect(url_for("dashboard"))
+        flash("Sai thông tin đăng nhập!", "danger")
     return render_template("index.html")
 
-# --- Login Route ---
-@app.route("/login", methods=["POST"])
-def login():
-    userID = request.form.get("userID")
-    password = request.form.get("password")
-
-    # Demo credentials
-    if userID == "user_demo" and password == "Test@123456":
-        session["username"] = userID
-        return redirect(url_for("dashboard"))
-    else:
-        return redirect(url_for("index"))
-
-# --- Dashboard ---
 @app.route("/dashboard")
 def dashboard():
-    if "username" not in session:
+    if "user" not in session:
         return redirect(url_for("index"))
     return render_template("dashboard.html")
 
-# --- EMR Profile Page (GET) ---
-@app.route("/profile_page")
+@app.route("/profile_page", methods=["GET", "POST"])
 def emr_profile():
-    if "username" not in session:
-        return redirect(url_for("index"))
-    # Render empty profile page first
-    return render_template("EMR_Profile.html", tables=[], titles=[])
-
-# --- EMR Profiling (POST) ---
-@app.route("/profile", methods=["POST"])
-def profile():
-    if "username" not in session:
+    if "user" not in session:
         return redirect(url_for("index"))
 
-    try:
-        file = request.files.get("csv_file")
-        if not file or file.filename == "":
-            return redirect(url_for("emr_profile"))
+    summary_html = None
+    filename = None
 
-        df = pd.read_csv(file)
-        summary = df.describe(include="all").T
-        summary_html = summary.to_html(
-            classes="table table-striped text-sm text-center border-collapse",
-            border=0
-        )
+    if request.method == "POST":
+        file = request.files.get("file")
+        if file and file.filename != "":
+            try:
+                filename = secure_filename(file.filename)
+                filepath = os.path.join(UPLOAD_FOLDER, filename)
+                file.save(filepath)
 
-        return render_template("EMR_Profile.html", tables=[summary_html], titles=["EMR Profiling Summary"])
-    except Exception as e:
-        logging.error(f"Profile error: {e}")
-        return redirect(url_for("emr_profile"))
+                # Đọc CSV/Excel
+                if filename.lower().endswith(".csv"):
+                    df = pd.read_csv(filepath)
+                else:
+                    df = pd.read_excel(filepath)
 
-# --- Image Prediction Page (GET) ---
-@app.route("/prediction_page")
+                # Summary đẹp
+                summary_html = df.describe(include="all").T.to_html(
+                    classes="table-auto w-full border-collapse border border-gray-300",
+                    border=0, escape=False
+                )
+
+            except Exception as e:
+                logging.error(f"EMR Profile error: {e}")
+                flash("File không hợp lệ hoặc lỗi đọc dữ liệu.", "danger")
+
+    return render_template("EMR_Profile.html", summary=summary_html, filename=filename)
+
+@app.route("/prediction_page", methods=["GET", "POST"])
 def emr_prediction():
-    if "username" not in session:
-        return redirect(url_for("index"))
-    return render_template("EMR_Prediction.html", image_data=None, prediction=None, confidence=None)
-
-# --- Prediction (POST) ---
-@app.route("/predict", methods=["POST"])
-def predict():
-    global model
-    if "username" not in session:
+    if "user" not in session:
         return redirect(url_for("index"))
 
-    try:
-        file = request.files.get("image_file")
-        if not file or file.filename == "":
-            return redirect(url_for("emr_prediction"))
+    filename = None
+    image_b64 = None
+    prediction = None
 
-        filename = secure_filename(file.filename)
-        filepath = os.path.join("uploads", filename)
-        file.save(filepath)
+    if request.method == "POST":
+        file = request.files.get("file")
+        if file and file.filename != "":
+            try:
+                filename = secure_filename(file.filename)
+                filepath = os.path.join(UPLOAD_FOLDER, filename)
+                file.save(filepath)
 
-        # --- Preprocess image ---
-        img = load_img(filepath, target_size=(240, 240))
-        img_array = img_to_array(img)
-        img_array = np.expand_dims(img_array, axis=0)
-        img_array = preprocess_input(img_array)
+                # Load model
+                model = load_trained_model()
 
-        # --- Lazy load model ---
-        if model is None:
-            model = load_trained_model()
+                # Preprocess image
+                img = load_img(filepath, target_size=(240, 240))
+                x = img_to_array(img)
+                x = np.expand_dims(x, axis=0)
+                x = preprocess_image(x)
 
-        # --- Prediction ---
-        preds = model.predict(img_array)
-        prob = float(preds[0][0])
-        pred_class = "Nodule" if prob >= 0.5 else "Non-Nodule"
-        confidence = prob * 100 if prob >= 0.5 else (100 - prob * 100)
+                # Predict
+                prob = float(model.predict(x)[0][0])
+                pred_class = "Nodule" if prob >= 0.5 else "Non-nodule"
 
-        # --- Encode image for display ---
-        with open(filepath, "rb") as img_f:
-            img_base64 = base64.b64encode(img_f.read()).decode("utf-8")
+                # Encode image preview
+                with open(filepath, "rb") as f:
+                    image_b64 = base64.b64encode(f.read()).decode("utf-8")
 
-        # --- Clean memory ---
-        gc.collect()
+                prediction = {"result": pred_class, "probability": prob}
 
-        return render_template(
-            "EMR_Prediction.html",
-            image_data=img_base64,
-            prediction=pred_class,
-            confidence=f"{confidence:.2f}%"
-        )
-    except Exception as e:
-        logging.error(f"Prediction error: {e}")
-        return redirect(url_for("emr_prediction"))
+            except Exception as e:
+                logging.error(f"Prediction error: {e}")
+                flash("Lỗi dự đoán hình ảnh. Kiểm tra định dạng file.", "danger")
 
-# --- Logout ---
+    return render_template("EMR_Prediction.html",
+                           prediction=prediction,
+                           filename=filename,
+                           image_b64=image_b64)
+
 @app.route("/logout")
 def logout():
     session.clear()
     return redirect(url_for("index"))
 
-# --- Run (Render-compatible) ---
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
+    app.run(debug=True)
