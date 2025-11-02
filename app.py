@@ -6,7 +6,7 @@ import gc
 import numpy as np
 import pandas as pd
 import requests
-from flask import Flask, render_template, request, redirect, url_for, flash, session
+from flask import Flask, render_template, request, redirect, url_for, session
 from werkzeug.utils import secure_filename
 from tensorflow.keras.models import load_model
 from tensorflow.keras.preprocessing.image import load_img, img_to_array
@@ -59,40 +59,35 @@ model = None
 def index():
     return render_template("index.html")
 
-# --- Login Route (matches url_for('login') in index.html) ---
+# --- Login Route ---
 @app.route("/login", methods=["POST"])
 def login():
     userID = request.form.get("userID")
     password = request.form.get("password")
 
-    # Demo credentials (you can later replace with real logic)
+    # Demo credentials
     if userID == "user_demo" and password == "Test@123456":
-        session["user"] = userID
-        #flash("Đăng nhập thành công!", "success")
+        session["username"] = userID
         return redirect(url_for("dashboard"))
     else:
-        flash("Sai ID hoặc mật khẩu. Vui lòng thử lại.", "danger")
         return redirect(url_for("index"))
 
 # --- Dashboard ---
 @app.route("/dashboard")
 def dashboard():
-    if "user" not in session:
-        flash("Vui lòng đăng nhập trước.", "danger")
+    if "username" not in session:
         return redirect(url_for("index"))
     return render_template("dashboard.html")
 
 # --- EMR Profiling ---
 @app.route("/profile", methods=["POST"])
 def profile():
-    if "user" not in session:
-        flash("Bạn chưa đăng nhập.", "danger")
+    if "username" not in session:
         return redirect(url_for("index"))
 
     try:
         file = request.files.get("csv_file")
         if not file or file.filename == "":
-            flash("Vui lòng chọn file CSV để tải lên.", "error")
             return redirect(url_for("dashboard"))
 
         df = pd.read_csv(file)
@@ -102,28 +97,25 @@ def profile():
         return render_template("EMR_Profile.html", tables=[summary_html], titles=["EMR Profiling Summary"])
     except Exception as e:
         logging.error(f"Profile error: {e}")
-        flash(f"Lỗi khi phân tích hồ sơ: {str(e)}", "error")
         return redirect(url_for("dashboard"))
 
 # --- Prediction ---
 @app.route("/predict", methods=["POST"])
 def predict():
     global model
-    if "user" not in session:
-        flash("Bạn chưa đăng nhập.", "danger")
+    if "username" not in session:
         return redirect(url_for("index"))
 
     try:
         file = request.files.get("image_file")
         if not file or file.filename == "":
-            flash("Vui lòng chọn ảnh để tải lên.", "error")
             return redirect(url_for("dashboard"))
 
         filename = secure_filename(file.filename)
         filepath = os.path.join("uploads", filename)
         file.save(filepath)
 
-        # --- Preprocess image ---
+        # --- Preprocess image (Colab standard) ---
         img = load_img(filepath, target_size=(240, 240))
         img_array = img_to_array(img)
         img_array = np.expand_dims(img_array, axis=0)
@@ -154,14 +146,12 @@ def predict():
         )
     except Exception as e:
         logging.error(f"Prediction error: {e}")
-        flash(f"Lỗi khi dự đoán: {str(e)}", "error")
         return redirect(url_for("dashboard"))
 
 # --- Logout ---
 @app.route("/logout")
 def logout():
     session.clear()
-    #flash("Đã đăng xuất khỏi hệ thống.", "success")
     return redirect(url_for("index"))
 
 # --- Run (Render-compatible) ---
