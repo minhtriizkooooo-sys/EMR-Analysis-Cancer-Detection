@@ -72,7 +72,12 @@ def index():
             session["user"] = username
             return redirect(url_for("dashboard"))
         flash("Sai thông tin đăng nhập!", "danger")
-    return render_template("index.html")  # form action trong index.html: url_for('index')
+    return render_template("index.html")  # form action trong index.html: url_for('login')
+
+# --- Add login route to match index.html form action ---
+@app.route("/login", methods=["POST"])
+def login():
+    return index()
 
 @app.route("/dashboard")
 def dashboard():
