@@ -1,130 +1,125 @@
 import os
 import io
-import gc
 import base64
 import numpy as np
 import pandas as pd
-import tensorflow as tf
-from flask import Flask, render_template, request, redirect, url_for, flash, Markup
+import logging
+from flask import Flask, render_template, request, redirect, url_for, flash, session
 from werkzeug.utils import secure_filename
 from tensorflow.keras.models import load_model
 from tensorflow.keras.preprocessing.image import load_img, img_to_array
-from tensorflow.keras.applications.efficientnet import preprocess_input
+from markupsafe import Markup
 from ydata_profiling import ProfileReport
 
-# -----------------------------------
-# Flask Configuration
-# -----------------------------------
+# --- Logging setup ---
+logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
+
+# --- Flask app setup ---
 app = Flask(__name__)
 app.secret_key = "emr_secret_key"
-UPLOAD_FOLDER = "uploads"
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+app.config["UPLOAD_FOLDER"] = "uploads"
+os.makedirs(app.config["UPLOAD_FOLDER"], exist_ok=True)
 
-# -----------------------------------
-# Model Configuration
-# -----------------------------------
-MODEL_PATH = "models/best_weights_model.keras"
-IMG_SIZE = (240, 240)  # ✅ Chuẩn Colab
-model = load_model(MODEL_PATH)
+# --- Load model ---
+MODEL_PATH = os.path.join("models", "best_weights_model.keras")
+model = None
 
-# -----------------------------------
-# Routes
-# -----------------------------------
+try:
+    model = load_model(MODEL_PATH)
+    logging.info("✅ Model loaded successfully.")
+except Exception as e:
+    logging.error(f"❌ Error loading model: {e}")
+
+# --- Home page ---
 @app.route("/")
 def index():
     return render_template("index.html")
 
+# --- Dashboard ---
 @app.route("/dashboard")
 def dashboard():
     return render_template("dashboard.html")
 
-# -----------------------------------
-# EMR CSV Profiling
-# -----------------------------------
-@app.route("/emr_profile", methods=["POST"])
-def emr_profile():
+# --- CSV profiling ---
+@app.route("/upload_csv", methods=["POST"])
+def upload_csv():
     if "file" not in request.files:
-        flash("Không có tệp được tải lên.", "error")
+        flash("Không có file được tải lên", "danger")
         return redirect(url_for("dashboard"))
 
     file = request.files["file"]
     if file.filename == "":
-        flash("Chưa chọn tệp CSV.", "error")
+        flash("Chưa chọn file CSV", "warning")
         return redirect(url_for("dashboard"))
 
-    try:
-        df = pd.read_csv(file)
-        profile = ProfileReport(df, title="📊 Báo cáo Phân tích EMR", minimal=True)
-        html = profile.to_html()
+    if file and file.filename.endswith(".csv"):
+        filepath = os.path.join(app.config["UPLOAD_FOLDER"], secure_filename(file.filename))
+        file.save(filepath)
 
-        # Giao diện gọn, scroll mượt
-        html_wrapped = f"""
-        <div style="max-width:95%;margin:auto;padding:1rem;color:#d7f5d0;font-family:Inter,sans-serif;">
-            <h1 style="text-align:center;color:#8fffa3;">📊 Báo cáo Phân tích EMR</h1>
-            <div style="background:#0f2415;border-radius:12px;padding:1rem;
-                        box-shadow:0 0 10px rgba(0,255,128,0.2);
-                        overflow-x:auto;max-height:650px;overflow-y:auto;">
-                {html}
-            </div>
-        </div>
-        """
-        return render_template("EMR_Profile.html", profile_html=Markup(html_wrapped))
+        try:
+            df = pd.read_csv(filepath)
+            profile = ProfileReport(df, title="EMR Profiling Report", explorative=True)
+            report_html = profile.to_html()
 
-    except Exception as e:
-        flash(f"Lỗi khi phân tích file: {e}", "error")
+            with open("templates/EMR_Profile.html", "w", encoding="utf-8") as f:
+                f.write(report_html)
+
+            flash("Phân tích CSV thành công!", "success")
+            return render_template("EMR_Profile.html")
+
+        except Exception as e:
+            flash(f"Lỗi xử lý CSV: {e}", "danger")
+            logging.error(e)
+            return redirect(url_for("dashboard"))
+
+    else:
+        flash("Vui lòng chọn file CSV hợp lệ", "warning")
         return redirect(url_for("dashboard"))
 
-# -----------------------------------
-# Image Prediction (Nodule / Non-Nodule)
-# -----------------------------------
+# --- Image prediction ---
 @app.route("/predict_image", methods=["POST"])
 def predict_image():
-    if "image" not in request.files:
-        flash("Không có tệp ảnh được tải lên.", "error")
+    if "file" not in request.files:
+        flash("Không có file ảnh được tải lên", "danger")
         return redirect(url_for("dashboard"))
 
-    file = request.files["image"]
+    file = request.files["file"]
     if file.filename == "":
-        flash("Chưa chọn ảnh để phân tích.", "error")
+        flash("Chưa chọn file ảnh", "warning")
         return redirect(url_for("dashboard"))
 
-    try:
-        filename = secure_filename(file.filename)
-        file_path = os.path.join(UPLOAD_FOLDER, filename)
-        file.save(file_path)
+    if file and file.filename.lower().endswith((".png", ".jpg", ".jpeg")):
+        filepath = os.path.join(app.config["UPLOAD_FOLDER"], secure_filename(file.filename))
+        file.save(filepath)
 
-        # ✅ Resize đúng chuẩn Colab
-        img = load_img(file_path, target_size=IMG_SIZE)
-        img_array = img_to_array(img)
-        img_array = np.expand_dims(img_array, axis=0)
-        img_array = preprocess_input(img_array)
+        try:
+            img = load_img(filepath, target_size=(240, 240))
+            img_array = img_to_array(img)
+            img_array = np.expand_dims(img_array, axis=0) / 255.0
 
-        # Dự đoán
-        prediction = model.predict(img_array)
-        label = "Nodule" if prediction[0][0] > 0.5 else "Non-Nodule"
-        confidence = float(prediction[0][0]) if label == "Nodule" else 1 - float(prediction[0][0])
+            if model is None:
+                flash("Model chưa được tải hoặc lỗi model!", "danger")
+                return redirect(url_for("dashboard"))
 
-        # Giải phóng bộ nhớ
-        tf.keras.backend.clear_session()
-        gc.collect()
+            prediction = model.predict(img_array)
+            pred_class = "Nodule" if prediction[0][0] > 0.5 else "Non-Nodule"
 
-        # Encode ảnh để hiển thị lại
-        with open(file_path, "rb") as f:
-            encoded_image = base64.b64encode(f.read()).decode("utf-8")
+            img_base64 = base64.b64encode(open(filepath, "rb").read()).decode("utf-8")
+            flash(Markup(f"<b>Kết quả dự đoán:</b> {pred_class}"), "info")
 
-        return render_template(
-            "EMR_Prediction.html",
-            label=label,
-            confidence=f"{confidence*100:.2f}%",
-            image_data=encoded_image
-        )
+            return render_template("EMR_Prediction.html",
+                                   image_data=img_base64,
+                                   result=pred_class)
 
-    except Exception as e:
-        flash(f"Lỗi khi phân tích ảnh: {e}", "error")
+        except Exception as e:
+            flash(f"Lỗi xử lý ảnh: {e}", "danger")
+            logging.error(e)
+            return redirect(url_for("dashboard"))
+    else:
+        flash("Vui lòng chọn file ảnh hợp lệ (PNG, JPG, JPEG)", "warning")
         return redirect(url_for("dashboard"))
 
-# -----------------------------------
-# Run App
-# -----------------------------------
+# --- Run app (Render uses gunicorn, port auto-set) ---
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=7860)
+    port = int(os.environ.get("PORT", 1000))
+    app.run(host="0.0.0.0", port=port)
