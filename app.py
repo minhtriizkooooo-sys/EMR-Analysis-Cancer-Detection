@@ -2,16 +2,18 @@ import os
 import io
 import base64
 import logging
+import gc
 import numpy as np
 import pandas as pd
 import requests
-from flask import Flask, render_template, request, redirect, url_for, flash
+from flask import Flask, render_template, request, redirect, url_for, flash, session
+from werkzeug.utils import secure_filename
 from tensorflow.keras.models import load_model
 from tensorflow.keras.preprocessing.image import load_img, img_to_array
-from werkzeug.utils import secure_filename
+from tensorflow.keras.applications.efficientnet import preprocess_input
 
 # --- Logging ---
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 # --- Flask App ---
 app = Flask(__name__)
@@ -34,9 +36,9 @@ def download_model():
             with open(MODEL_PATH, "wb") as f:
                 for chunk in response.iter_content(chunk_size=8192):
                     f.write(chunk)
-            logging.info("Model downloaded successfully.")
+            logging.info("✅ Model downloaded successfully.")
         else:
-            logging.error(f"Failed to download model. HTTP {response.status_code}")
+            logging.error(f"❌ Failed to download model. HTTP {response.status_code}")
             raise RuntimeError("Cannot download model from Hugging Face.")
 
 # --- Load Keras model ---
@@ -44,80 +46,105 @@ def load_trained_model():
     download_model()
     logging.info("Loading model...")
     model = load_model(MODEL_PATH)
-    logging.info("Model loaded successfully.")
+    logging.info("✅ Model loaded successfully.")
     return model
 
-# --- Lazy load to speed up startup ---
+# --- Lazy loading for performance ---
 model = None
 
-# --- Routes ---
+# ================= ROUTES =================
 
-@app.route("/")
+# --- Home (Login Page) ---
+@app.route("/", methods=["GET"])
 def index():
     return render_template("index.html")
 
+# --- Login Route (matches url_for('login') in index.html) ---
+@app.route("/login", methods=["POST"])
+def login():
+    userID = request.form.get("userID")
+    password = request.form.get("password")
+
+    # Demo credentials (you can later replace with real logic)
+    if userID == "user_demo" and password == "Test@123456":
+        session["user"] = userID
+        #flash("Đăng nhập thành công!", "success")
+        return redirect(url_for("dashboard"))
+    else:
+        flash("Sai ID hoặc mật khẩu. Vui lòng thử lại.", "danger")
+        return redirect(url_for("index"))
+
+# --- Dashboard ---
 @app.route("/dashboard")
 def dashboard():
+    if "user" not in session:
+        flash("Vui lòng đăng nhập trước.", "danger")
+        return redirect(url_for("index"))
     return render_template("dashboard.html")
 
 # --- EMR Profiling ---
 @app.route("/profile", methods=["POST"])
 def profile():
-    try:
-        if "csv_file" not in request.files:
-            flash("No file uploaded.", "error")
-            return redirect(url_for("dashboard"))
+    if "user" not in session:
+        flash("Bạn chưa đăng nhập.", "danger")
+        return redirect(url_for("index"))
 
-        file = request.files["csv_file"]
-        if file.filename == "":
-            flash("Please select a CSV file.", "error")
+    try:
+        file = request.files.get("csv_file")
+        if not file or file.filename == "":
+            flash("Vui lòng chọn file CSV để tải lên.", "error")
             return redirect(url_for("dashboard"))
 
         df = pd.read_csv(file)
         summary = df.describe(include="all").T
-        summary_html = summary.to_html(classes="table table-striped", border=0)
+        summary_html = summary.to_html(classes="table table-striped text-sm text-center border-collapse", border=0)
 
         return render_template("EMR_Profile.html", tables=[summary_html], titles=["EMR Profiling Summary"])
     except Exception as e:
         logging.error(f"Profile error: {e}")
-        flash(f"Error during profiling: {str(e)}", "error")
+        flash(f"Lỗi khi phân tích hồ sơ: {str(e)}", "error")
         return redirect(url_for("dashboard"))
 
 # --- Prediction ---
 @app.route("/predict", methods=["POST"])
 def predict():
     global model
-    try:
-        if "image_file" not in request.files:
-            flash("No image uploaded.", "error")
-            return redirect(url_for("dashboard"))
+    if "user" not in session:
+        flash("Bạn chưa đăng nhập.", "danger")
+        return redirect(url_for("index"))
 
-        file = request.files["image_file"]
-        if file.filename == "":
-            flash("Please select an image.", "error")
+    try:
+        file = request.files.get("image_file")
+        if not file or file.filename == "":
+            flash("Vui lòng chọn ảnh để tải lên.", "error")
             return redirect(url_for("dashboard"))
 
         filename = secure_filename(file.filename)
         filepath = os.path.join("uploads", filename)
         file.save(filepath)
 
-        # Load and preprocess image
-        img = load_img(filepath, target_size=(240, 240))  # Resize theo Colab
+        # --- Preprocess image ---
+        img = load_img(filepath, target_size=(240, 240))
         img_array = img_to_array(img)
-        img_array = np.expand_dims(img_array, axis=0) / 255.0
+        img_array = np.expand_dims(img_array, axis=0)
+        img_array = preprocess_input(img_array)
 
-        # Load model lazily
+        # --- Lazy load model ---
         if model is None:
             model = load_trained_model()
 
-        # Predict
+        # --- Prediction ---
         preds = model.predict(img_array)
-        pred_class = "Nodule" if preds[0][0] >= 0.5 else "Non-Nodule"
-        confidence = float(preds[0][0]) * 100 if preds[0][0] >= 0.5 else (100 - float(preds[0][0]) * 100)
+        prob = float(preds[0][0])
+        pred_class = "Nodule" if prob >= 0.5 else "Non-Nodule"
+        confidence = prob * 100 if prob >= 0.5 else (100 - prob * 100)
 
-        # Encode image for HTML
+        # --- Encode image for display ---
         with open(filepath, "rb") as img_f:
             img_base64 = base64.b64encode(img_f.read()).decode("utf-8")
+
+        # --- Clean memory ---
+        gc.collect()
 
         return render_template(
             "EMR_Prediction.html",
@@ -125,13 +152,19 @@ def predict():
             prediction=pred_class,
             confidence=f"{confidence:.2f}%"
         )
-
     except Exception as e:
         logging.error(f"Prediction error: {e}")
-        flash(f"Error during prediction: {str(e)}", "error")
+        flash(f"Lỗi khi dự đoán: {str(e)}", "error")
         return redirect(url_for("dashboard"))
+
+# --- Logout ---
+@app.route("/logout")
+def logout():
+    session.clear()
+    #flash("Đã đăng xuất khỏi hệ thống.", "success")
+    return redirect(url_for("index"))
 
 # --- Run (Render-compatible) ---
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 1000))
+    port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
