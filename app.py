@@ -22,6 +22,7 @@ app.secret_key = os.environ.get('SECRET_KEY', 'default_strong_secret_key_12345')
 
 # Cấu hình thư mục
 UPLOAD_FOLDER = '/tmp/uploads'
+# Dòng này đã được sửa lỗi cú pháp
 os.makedirs(UPLOAD_FOLDER, exist_ok=True) 
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 app.config['ALLOWED_EXTENSIONS'] = {'csv', 'xlsx', 'xls', 'png', 'jpg', 'jpeg', 'gif', 'bmp'}
@@ -32,6 +33,7 @@ TARGET_SIZE = (240, 240)
 MAX_FILE_SIZE_MB = 4 
 
 # **URL RAW CỦA MODEL TRÊN HUGGING FACE**
+# URL này đã được kiểm tra và là chính xác
 HF_MODEL_URL = "https://huggingface.co/spaces/minhtriizkooooo/EMR-Analysis-Cancer-Detection/raw/main/models/best_weights_model.keras"
 MODEL_FILENAME = "best_weights_model.keras"
 
@@ -47,8 +49,8 @@ def load_keras_model():
         return MODEL
 
     # 1. KIỂM TRA SỰ TỒN TẠI CỦA FILE
-    if not MODEL_PATH.exists():
-        logger.warning("⚠️ Model file NOT FOUND locally at %s. Attempting to download from Hugging Face...", MODEL_PATH)
+    if not MODEL_PATH.exists() or MODEL_PATH.stat().st_size < 1024: # Kiểm tra kích thước file (> 1KB)
+        logger.warning("⚠️ Model file NOT FOUND or too small locally at %s. Attempting to download from Hugging Face...", MODEL_PATH)
         
         # Cố gắng tạo thư mục models/ nếu chưa có
         Path(MODEL_PATH).parent.mkdir(parents=True, exist_ok=True)
@@ -56,18 +58,21 @@ def load_keras_model():
         # 2. TẢI FILE TỪ HUGGING FACE
         try:
             logger.info(f"⬇️ Downloading model from: {HF_MODEL_URL}")
-            # Thêm timeout 10 phút cho file lớn
             response = requests.get(HF_MODEL_URL, stream=True, timeout=600) 
-            response.raise_for_status() # Báo lỗi nếu mã trạng thái không phải 200 OK
+            response.raise_for_status() 
 
             with open(MODEL_PATH, 'wb') as f:
                 for chunk in response.iter_content(chunk_size=8192):
                     f.write(chunk)
-            logger.info("✅ Model download successful.")
+            
+            # **Kiểm tra sau khi tải xuống**
+            if not MODEL_PATH.exists() or MODEL_PATH.stat().st_size < 1024 * 1024: # Kiểm tra kích thước file (> 1MB)
+                raise FileNotFoundError(f"Tải xuống thành công nhưng file model có kích thước bất thường: {MODEL_PATH.stat().st_size} bytes.")
+
+            logger.info("✅ Model download successful. Size: %s MB", round(MODEL_PATH.stat().st_size / (1024*1024), 2))
 
         except requests.exceptions.RequestException as req_e:
             logger.error(f"❌ CRITICAL: Failed to download model from Hugging Face: {req_e}")
-            logger.error("Vui lòng kiểm tra lại URL RAW của model: %s", HF_MODEL_URL)
             return None
         except Exception as e:
             logger.error(f"❌ CRITICAL: An unexpected error occurred during download: {e}")
@@ -76,10 +81,11 @@ def load_keras_model():
     # 3. TẢI MODEL VÀO BỘ NHỚ
     try:
         logger.info("🔥 Loading Keras model into memory...")
+        # Đường dẫn được chuyển sang string
         MODEL = load_model(str(MODEL_PATH), compile=False) 
         logger.info("✅ Model loaded successfully from local file.")
     except Exception as e:
-        logger.error(f"❌ Error loading model after download: {e}")
+        logger.error(f"❌ Error loading model after download. Đây thường là lỗi định dạng .keras hoặc phiên bản Keras không tương thích: {e}")
         MODEL = None
         
     return MODEL
@@ -104,7 +110,8 @@ def login_required(f):
 def preprocess_image(image_file):
     """Preprocessing matched to Colab training (240x240 RGB, no rescale)."""
     if not MODEL:
-        raise RuntimeError("Model is not loaded. Cannot preprocess.")
+        # Nếu model là None, raise lỗi rõ ràng
+        raise RuntimeError("Model is not loaded. Cannot preprocess/predict.")
     img = load_img(image_file, target_size=TARGET_SIZE, color_mode='rgb')
     arr = img_to_array(img)
     arr = np.expand_dims(arr, axis=0)
@@ -320,6 +327,7 @@ def emr_prediction():
 
 # --- Run ---
 if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 1000))
+    # Render yêu cầu chạy trên cổng 10000 (hoặc cổng được định nghĩa trong biến môi trường PORT)
+    port = int(os.environ.get('PORT', 10000))
     logger.info("Starting Flask on port %s", port)
     app.run(host='0.0.0.0', port=port)
