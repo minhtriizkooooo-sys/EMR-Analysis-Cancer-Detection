@@ -4,7 +4,7 @@ import base64
 import numpy as np
 import pandas as pd
 from pathlib import Path 
-import requests # <-- Thư viện mới để tải file
+import requests 
 from flask import Flask, render_template, request, redirect, url_for, session, flash
 from werkzeug.utils import secure_filename
 from tensorflow.keras.models import load_model
@@ -22,23 +22,20 @@ app.secret_key = os.environ.get('SECRET_KEY', 'default_strong_secret_key_12345')
 
 # Cấu hình thư mục
 UPLOAD_FOLDER = '/tmp/uploads'
-os.makedirs(UPLOAD_FOLDER, exist_ok=True) 
+# Dòng này đã được sửa lỗi cú pháp (loại bỏ ký tự U+00A0)
+os.makedirs(UPLOAD_FOLDER, exist_ok=True) 
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 app.config['ALLOWED_EXTENSIONS'] = {'csv', 'xlsx', 'xls', 'png', 'jpg', 'jpeg', 'gif', 'bmp'}
 
-# --- Model config (ĐÃ SỬA LỖI ĐƯỜNG DẪN VÀ LOGIC TẢI) ---
+# --- Model config (Tải từ Hugging Face Space) ---
 MODEL = None
 TARGET_SIZE = (240, 240)
 MAX_FILE_SIZE_MB = 4 
 
 # **URL RAW CỦA MODEL TRÊN HUGGING FACE**
-# URL này phải là liên kết RAW để tải file, không phải liên kết xem code.
-# Liên kết thường có dạng "https://huggingface.co/spaces/.../raw/main/..."
-# Tôi đang giả định và cố gắng xây dựng liên kết RAW chính xác nhất có thể:
 HF_MODEL_URL = "https://huggingface.co/spaces/minhtriizkooooo/EMR-Analysis-Cancer-Detection/raw/main/models/best_weights_model.keras"
 MODEL_FILENAME = "best_weights_model.keras"
 
-# Lấy đường dẫn tuyệt đối cho model
 BASE_DIR = Path(__file__).resolve().parent 
 MODEL_PATH = BASE_DIR / "models" / MODEL_FILENAME
 
@@ -60,7 +57,7 @@ def load_keras_model():
         # 2. TẢI FILE TỪ HUGGING FACE
         try:
             logger.info(f"⬇️ Downloading model from: {HF_MODEL_URL}")
-            response = requests.get(HF_MODEL_URL, stream=True)
+            response = requests.get(HF_MODEL_URL, stream=True, timeout=600) # Thêm timeout 10 phút cho file lớn
             response.raise_for_status() # Báo lỗi nếu mã trạng thái không phải 200 OK
 
             with open(MODEL_PATH, 'wb') as f:
@@ -92,7 +89,6 @@ with app.app_context():
     load_keras_model()
 
 # --- Helpers ---
-# Giữ nguyên các hàm helpers (allowed_file, login_required, preprocess_image, profile_csv_data)
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in app.config['ALLOWED_EXTENSIONS']
 
@@ -170,7 +166,7 @@ def profile_csv_data(file_path, max_rows=5000, max_cols=50):
         logger.error("General Error profiling EMR: %s", e)
         return f"<div class='p-4 bg-red-100 text-red-700 rounded'>❌ Lỗi Không Xác Định: {str(e)}</div>"
 
-# --- Routes (Giữ nguyên) ---
+# --- Routes ---
 @app.route('/')
 def index():
     if 'user' in session:
