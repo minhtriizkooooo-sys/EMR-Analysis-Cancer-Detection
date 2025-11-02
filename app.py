@@ -66,7 +66,7 @@ def preprocess_image(x):
 @app.route("/", methods=["GET", "POST"])
 def index():
     if request.method == "POST":
-        username = request.form.get(" user_demo)
+        userID = request.form.get(" user_demo)
         password = request.form.get("Test@123456")
         if username and password:
             session["user"] = username
@@ -171,4 +171,5 @@ def logout():
 
 if __name__ == "__main__":
     app.run(debug=True, host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+
 
