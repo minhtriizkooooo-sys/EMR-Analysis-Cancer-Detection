@@ -2,13 +2,13 @@ import os
 import io
 import base64
 import logging
+import requests
 import pandas as pd
 import numpy as np
 from flask import Flask, render_template, request, redirect, url_for, session, flash
 from werkzeug.utils import secure_filename
 from tensorflow.keras.models import load_model
 from tensorflow.keras.preprocessing.image import load_img, img_to_array
-from huggingface_hub import hf_hub_download
 
 # --- Logger ---
 logging.basicConfig(level=logging.INFO)
@@ -22,36 +22,47 @@ UPLOAD_FOLDER = "uploads"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
 # --- Model settings ---
-MODEL_REPO = "your_hf_username/your_model_repo"  # Thay bằng HF repo của bạn
+MODEL_DIR = "models"
 MODEL_FILE = "best_weights_model.keras"
-MODEL_PATH = os.path.join("models", MODEL_FILE)
-os.makedirs("models", exist_ok=True)
+MODEL_PATH = os.path.join(MODEL_DIR, MODEL_FILE)
+os.makedirs(MODEL_DIR, exist_ok=True)
+
+# HF Space raw URL for the model
+HF_MODEL_URL = "https://huggingface.co/spaces/minhtriizkooooo/EMR-Analysis-Cancer-Detection/resolve/main/models/best_weights_model.keras"
 
 model = None
 
-def download_model_from_hf():
-    """Tải model từ Hugging Face nếu chưa có"""
+# --- Download model from HF Space ---
+def download_model_from_hf_space():
     if not os.path.exists(MODEL_PATH):
-        logging.info("Downloading model from Hugging Face...")
-        path = hf_hub_download(repo_id=MODEL_REPO, filename=MODEL_FILE)
-        os.rename(path, MODEL_PATH)
-        logging.info(f"Model downloaded to {MODEL_PATH}")
+        logging.info("Downloading model from Hugging Face Space...")
+        r = requests.get(HF_MODEL_URL, stream=True)
+        if r.status_code == 200:
+            with open(MODEL_PATH, "wb") as f:
+                for chunk in r.iter_content(chunk_size=8192):
+                    f.write(chunk)
+            logging.info(f"Model downloaded to {MODEL_PATH}")
+        else:
+            logging.error(f"Failed to download model, status code: {r.status_code}")
+            raise Exception("Cannot download model from HF Space")
 
+# --- Load Keras model ---
 def load_trained_model():
     global model
     if model is None:
-        download_model_from_hf()
+        download_model_from_hf_space()
         logging.info("Loading Keras model...")
         model = load_model(MODEL_PATH)
         logging.info("Model loaded successfully")
     return model
 
+# --- Preprocess image for prediction ---
 def preprocess_image(x):
-    """Giống logic Colab: resize, normalize"""
     x = x / 255.0
     return x
 
 # --- Routes ---
+
 @app.route("/", methods=["GET", "POST"])
 def index():
     if request.method == "POST":
@@ -85,13 +96,13 @@ def emr_profile():
                 filepath = os.path.join(UPLOAD_FOLDER, filename)
                 file.save(filepath)
 
-                # Đọc CSV/Excel
+                # Read CSV/Excel
                 if filename.lower().endswith(".csv"):
                     df = pd.read_csv(filepath)
                 else:
                     df = pd.read_excel(filepath)
 
-                # Summary đẹp
+                # Generate summary table
                 summary_html = df.describe(include="all").T.to_html(
                     classes="table-auto w-full border-collapse border border-gray-300",
                     border=0, escape=False
@@ -154,4 +165,4 @@ def logout():
     return redirect(url_for("index"))
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    app.run(debug=True, host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
