@@ -3,10 +3,15 @@ Flask==2.3.3
 Werkzeug==2.3.7
 gunicorn==23.0.0
 
-# TensorFlow CPU (AI image prediction)
-tensorflow-cpu==2.20.0
-numpy==2.3.4
-protobuf>=5.28.0
+# TensorFlow/Keras (Đã hạ cấp phiên bản để tối ưu load model .keras)
+tensorflow-cpu==2.16.1 # Hạ cấp để tăng tính tương thích với Keras cũ
+keras==2.16.0         # Cài đặt Keras 2.16.0 (phiên bản Keras 2 cuối cùng và ổn định)
+h5py==3.10.0          # Cần thiết cho Keras và việc đọc file model.
+
+# Dependencies
+numpy==1.26.4
+protobuf==3.20.3      # Phiên bản cũ hơn ổn định hơn với Keras 2.x
+requests==2.32.3      # Thêm Requests để tải model
 
 # Data processing
 pandas==2.2.3
@@ -16,4 +21,3 @@ matplotlib==3.9.2
 
 # Hugging Face
 huggingface-hub==0.26.2
-
