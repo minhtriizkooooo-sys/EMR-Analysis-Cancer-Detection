@@ -3,43 +3,37 @@ import io
 import base64
 import numpy as np
 import pandas as pd
-from pathlib import Path 
-import requests 
+from pathlib import Path
+import requests
 from flask import Flask, render_template, request, redirect, url_for, session, flash
 from werkzeug.utils import secure_filename
 from tensorflow.keras.models import load_model
 from tensorflow.keras.preprocessing.image import load_img, img_to_array
 import logging
-from pandas.errors import ParserError 
+from functools import wraps  # Added for login_required decorator fix
 
 # --- Logger ---
-logging.basicConfig(level=logging.INFO, format='%(asctime)s INFO:%(levelname)s:%(name)s:%(message)s')
+logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s:%(name)s:%(message)s')
 logger = logging.getLogger(__name__)
 
 # --- Flask config ---
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', 'default_strong_secret_key_12345')
 
-# Cấu hình thư mục
+# Cấu hình thư mục và giới hạn
 UPLOAD_FOLDER = '/tmp/uploads'
-# Dòng này đã được sửa lỗi cú pháp
-os.makedirs(UPLOAD_FOLDER, exist_ok=True) 
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 app.config['ALLOWED_EXTENSIONS'] = {'csv', 'xlsx', 'xls', 'png', 'jpg', 'jpeg', 'gif', 'bmp'}
+app.config['MAX_CONTENT_LENGTH'] = 4 * 1024 * 1024  # 4MB limit, added for security
 
 # --- Model config (Tải từ Hugging Face Space) ---
 MODEL = None
 TARGET_SIZE = (240, 240)
-MAX_FILE_SIZE_MB = 4 
-
-# **URL RAW CỦA MODEL TRÊN HUGGING FACE**
-# URL này đã được kiểm tra và là chính xác
 HF_MODEL_URL = "https://huggingface.co/spaces/minhtriizkooooo/EMR-Analysis-Cancer-Detection/raw/main/models/best_weights_model.keras"
 MODEL_FILENAME = "best_weights_model.keras"
-
-BASE_DIR = Path(__file__).resolve().parent 
+BASE_DIR = Path(__file__).resolve().parent
 MODEL_PATH = BASE_DIR / "models" / MODEL_FILENAME
-
 
 def load_keras_model():
     """Load model, downloading from HF if necessary."""
@@ -47,47 +41,43 @@ def load_keras_model():
     
     if MODEL is not None:
         return MODEL
-
+    
     # 1. KIỂM TRA SỰ TỒN TẠI CỦA FILE
-    if not MODEL_PATH.exists() or MODEL_PATH.stat().st_size < 1024: # Kiểm tra kích thước file (> 1KB)
+    if not MODEL_PATH.exists() or MODEL_PATH.stat().st_size < 1024:  # Kiểm tra kích thước file (> 1KB)
         logger.warning("⚠️ Model file NOT FOUND or too small locally at %s. Attempting to download from Hugging Face...", MODEL_PATH)
         
         # Cố gắng tạo thư mục models/ nếu chưa có
-        Path(MODEL_PATH).parent.mkdir(parents=True, exist_ok=True)
-
+        MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
+        
         # 2. TẢI FILE TỪ HUGGING FACE
         try:
             logger.info(f"⬇️ Downloading model from: {HF_MODEL_URL}")
-            response = requests.get(HF_MODEL_URL, stream=True, timeout=600) 
-            response.raise_for_status() 
-
+            response = requests.get(HF_MODEL_URL, stream=True, timeout=600)
+            response.raise_for_status()
             with open(MODEL_PATH, 'wb') as f:
                 for chunk in response.iter_content(chunk_size=8192):
                     f.write(chunk)
             
             # **Kiểm tra sau khi tải xuống**
-            if not MODEL_PATH.exists() or MODEL_PATH.stat().st_size < 1024 * 1024: # Kiểm tra kích thước file (> 1MB)
+            if not MODEL_PATH.exists() or MODEL_PATH.stat().st_size < 1024 * 1024:  # Kiểm tra kích thước file (> 1MB)
                 raise FileNotFoundError(f"Tải xuống thành công nhưng file model có kích thước bất thường: {MODEL_PATH.stat().st_size} bytes.")
-
             logger.info("✅ Model download successful. Size: %s MB", round(MODEL_PATH.stat().st_size / (1024*1024), 2))
-
         except requests.exceptions.RequestException as req_e:
             logger.error(f"❌ CRITICAL: Failed to download model from Hugging Face: {req_e}")
             return None
         except Exception as e:
             logger.error(f"❌ CRITICAL: An unexpected error occurred during download: {e}")
             return None
-            
+    
     # 3. TẢI MODEL VÀO BỘ NHỚ
     try:
         logger.info("🔥 Loading Keras model into memory...")
-        # Đường dẫn được chuyển sang string
-        MODEL = load_model(str(MODEL_PATH), compile=False) 
+        MODEL = load_model(str(MODEL_PATH), compile=False)
         logger.info("✅ Model loaded successfully from local file.")
     except Exception as e:
-        logger.error(f"❌ Error loading model after download. Đây thường là lỗi định dạng .keras hoặc phiên bản Keras không tương thích: {e}")
+        logger.error(f"❌ Error loading model after download: {e}")
         MODEL = None
-        
+    
     return MODEL
 
 # Tải model ngay khi ứng dụng bắt đầu
@@ -99,79 +89,24 @@ def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in app.config['ALLOWED_EXTENSIONS']
 
 def login_required(f):
+    @wraps(f)  # Sử dụng wraps để giữ nguyên tên hàm
     def decorated_function(*args, **kwargs):
         if 'user' not in session:
             flash('Vui lòng đăng nhập để truy cập trang này.', 'danger')
             return redirect(url_for('index'))
         return f(*args, **kwargs)
-    decorated_function.__name__ = f.__name__
     return decorated_function
 
 def preprocess_image(image_file):
     """Preprocessing matched to Colab training (240x240 RGB, no rescale)."""
     if not MODEL:
-        # Nếu model là None, raise lỗi rõ ràng
         raise RuntimeError("Model is not loaded. Cannot preprocess/predict.")
     img = load_img(image_file, target_size=TARGET_SIZE, color_mode='rgb')
     arr = img_to_array(img)
     arr = np.expand_dims(arr, axis=0)
     return arr
 
-def profile_csv_data(file_path, max_rows=5000, max_cols=50):
-    try:
-        if file_path.lower().endswith('.csv'):
-            try:
-                df = pd.read_csv(file_path)
-            except UnicodeDecodeError:
-                try:
-                    df = pd.read_csv(file_path, encoding='latin1')
-                except Exception:
-                    df = pd.read_csv(file_path, encoding='utf-8', engine='python')
-            except ParserError as pe:
-                 logger.error("Parser Error during CSV read: %s", pe)
-                 raise ValueError("CSV format error. Check delimiter, quoting, or missing values.")
-
-        elif file_path.lower().endswith(('.xlsx', '.xls')):
-            try:
-                df = pd.read_excel(file_path)
-            except Exception as xe:
-                logger.error("Excel Read Error: %s", xe)
-                raise ValueError("Excel file read error. Check file corruption or sheet name.")
-        else:
-            raise ValueError("Unsupported file extension in profiling function.")
-
-        df = df.loc[:, ~df.columns.str.contains('^Unnamed')]
-        n_rows, n_cols = df.shape
-        
-        info_html = f"""
-        <div class="bg-blue-50 p-4 rounded-lg mb-4 shadow-sm border-l-4 border-blue-400">
-            <h3 class="text-xl font-semibold text-blue-700 mb-2">📊 Tổng quan Dữ liệu</h3>
-            <p><strong>Số bản ghi:</strong> {n_rows}</p>
-            <p><strong>Số cột:</strong> {n_cols}</p>
-        </div>
-        """
-        
-        if n_rows > max_rows or n_cols > max_cols:
-            sample = df.sample(min(200, n_rows)).head(50)
-            return info_html + "<h4>⚠️ File quá lớn — hiển thị mẫu dữ liệu</h4>" + sample.to_html(classes='table-auto w-full text-sm', index=False)
-        
-        desc_html = df.describe(include='all', datetime_is_numeric=True).to_html(classes='table-auto w-full text-sm', border=0)
-        
-        nulls = "<h4 class='mt-4'>Nulls per column</h4><div class='table-responsive'><table class='table-auto w-full text-sm'><thead><tr><th>Column</th><th>Nulls</th><th>% Null</th></tr></thead><tbody>"
-        for col in df.columns:
-            null_count = int(df[col].isnull().sum())
-            pct = (null_count / n_rows) * 100 if n_rows else 0
-            nulls += f"<tr><td>{col}</td><td>{null_count}</td><td>{pct:.2f}%</td></tr>"
-        nulls += "</tbody></table></div>"
-        
-        return info_html + "<h3 class='mt-4 mb-2'>📈 Thống kê Mô tả</h3>" + desc_html + nulls
-    
-    except ValueError as ve:
-        logger.error("Data Read/Format Error: %s", ve)
-        return f"<div class='p-4 bg-red-100 text-red-700 rounded'>❌ Lỗi Định dạng File: {str(ve)}</div>"
-    except Exception as e:
-        logger.error("General Error profiling EMR: %s", e)
-        return f"<div class='p-4 bg-red-100 text-red-700 rounded'>❌ Lỗi Không Xác Định: {str(e)}</div>"
+# Removed unused profile_csv_data function to clean up code
 
 # --- Routes ---
 @app.route('/')
@@ -180,7 +115,7 @@ def index():
         return redirect(url_for('dashboard'))
     return render_template('index.html')
 
-@app.route('/login', methods=['GET','POST'])
+@app.route('/login', methods=['GET', 'POST'])
 def login():
     if request.method == 'POST':
         user_id = request.form.get('userID')
@@ -206,11 +141,8 @@ def dashboard():
     return render_template('dashboard.html', user=session.get('user'))
 
 @app.route("/emr_profile", methods=["GET", "POST"])
+@login_required  # Added login_required for consistency
 def emr_profile():
-    if 'user' not in session:
-        flash("Vui lòng đăng nhập trước khi truy cập.", "danger")
-        return redirect(url_for("index"))
-        
     summary = None
     filename = None
     
@@ -219,23 +151,20 @@ def emr_profile():
         if not file or file.filename == '':
             flash("Không có file nào được tải lên.", "danger")
             return render_template('emr_profile.html', summary=None, filename=None)
-            
-        filename = file.filename
+        
+        filename = secure_filename(file.filename)  # Use secure_filename
         
         try:
             file_stream = io.BytesIO(file.read())
             
-            if len(file_stream.getvalue()) > MAX_FILE_SIZE_MB * 1024 * 1024:
-                raise ValueError(f"File quá lớn ({len(file_stream.getvalue())//(1024*1024)}MB > {MAX_FILE_SIZE_MB}MB)")
-
             if filename.lower().endswith('.csv'):
                 df = pd.read_csv(file_stream)
             elif filename.lower().endswith(('.xls', '.xlsx')):
                 df = pd.read_excel(file_stream)
             else:
-                summary = f"<p class='text-red-500 font-semibold'>Chỉ hỗ trợ file CSV hoặc Excel. File: {filename}</p>"
-                return render_template('emr_profile.html', summary=summary, filename=filename)
-
+                flash("Chỉ hỗ trợ file CSV hoặc Excel.", "danger")
+                return render_template('emr_profile.html', summary=None, filename=filename)
+            
             rows, cols = df.shape
             col_info = []
             
@@ -282,12 +211,14 @@ def emr_profile():
             summary += "<h4 class='text-xl font-semibold mt-8 mb-4 text-gray-700'><i class='fas fa-table mr-2 text-primary-green'></i> 5 Dòng Dữ liệu Đầu tiên:</h4>"
             summary += "<div class='overflow-x-auto shadow-md rounded-lg'>" + table_html + "</div>"
             
+        except ValueError as ve:
+            flash(f"Lỗi định dạng file: {str(ve)}", "danger")
         except Exception as e:
-            summary = f"<p class='text-red-500 font-semibold text-xl'>Lỗi xử lý file EMR: <code class='text-gray-700 bg-gray-100 p-1 rounded'>{e}</code></p>"
-            
+            flash(f"Lỗi xử lý file EMR: {str(e)}", "danger")
+    
     return render_template('emr_profile.html', summary=summary, filename=filename)
 
-@app.route('/emr_prediction', methods=['GET','POST'])
+@app.route('/emr_prediction', methods=['GET', 'POST'])
 @login_required
 def emr_prediction():
     prediction_result, filename, image_b64 = None, None, None
@@ -314,20 +245,18 @@ def emr_prediction():
             logger.info("Raw model output: %s", preds.tolist())
             
             p_nodule = float(preds[0][0]) if preds.ndim == 2 and preds.shape[1] >= 1 else float(preds[0])
-
             label = 'Nodule' if p_nodule >= 0.5 else 'Non-nodule'
             prob = p_nodule if p_nodule >= 0.5 else 1.0 - p_nodule
-            prediction_result = {'result': label, 'probability': float(np.round(prob,6)), 'raw_output': float(np.round(p_nodule,6))}
+            prediction_result = {'result': label, 'probability': float(np.round(prob, 6)), 'raw_output': float(np.round(p_nodule, 6))}
             flash('Dự đoán AI hoàn tất.', 'success')
         except Exception as e:
             logger.error("Error during prediction: %s", e)
             flash(f'Lỗi khi xử lý hình ảnh hoặc dự đoán: {e}', 'danger')
-            return redirect(request.url)
+    
     return render_template('emr_prediction.html', prediction=prediction_result, filename=filename, image_b64=image_b64)
 
 # --- Run ---
 if __name__ == '__main__':
-    # Render yêu cầu chạy trên cổng 10000 (hoặc cổng được định nghĩa trong biến môi trường PORT)
     port = int(os.environ.get('PORT', 10000))
     logger.info("Starting Flask on port %s", port)
-    app.run(host='0.0.0.0', port=port)
+    app.run(host='0.0.0.0', port=port, debug=False)  # debug=False for production
