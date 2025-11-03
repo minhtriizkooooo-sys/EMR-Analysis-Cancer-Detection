@@ -50,8 +50,10 @@ def load_keras_model():
         
         # 2. TẢI FILE TỪ HUGGING FACE
         try:
+            hf_token = os.environ.get('HF_TOKEN')
+            headers = {"Authorization": f"Bearer {hf_token}"} if hf_token else {}  # Use HF_TOKEN if available for private files
             logger.info(f"⬇️ Downloading model from: {HF_MODEL_URL}")
-            response = requests.get(HF_MODEL_URL, stream=True, timeout=600)
+            response = requests.get(HF_MODEL_URL, headers=headers, stream=True, timeout=600)
             response.raise_for_status()
             with open(MODEL_PATH, 'wb') as f:
                 for chunk in response.iter_content(chunk_size=8192):
@@ -129,7 +131,7 @@ def login():
 @app.route('/logout')
 def logout():
     session.pop('user', None)
-    #flash('Đăng xuất thành công.', 'success')
+    flash('Đăng xuất thành công.', 'success')
     return redirect(url_for('index'))
 
 @app.route('/dashboard')
@@ -245,7 +247,7 @@ def emr_prediction():
             label = 'Nodule' if p_nodule >= 0.5 else 'Non-nodule'
             prob = p_nodule if p_nodule >= 0.5 else 1.0 - p_nodule
             prediction_result = {'result': label, 'probability': float(np.round(prob, 6)), 'raw_output': float(np.round(p_nodule, 6))}
-            #flash('Dự đoán AI hoàn tất.', 'success')
+            flash('Dự đoán AI hoàn tất.', 'success')
         except Exception as e:
             logger.error("Error during prediction: %s", e)
             flash(f'Lỗi khi xử lý hình ảnh hoặc dự đoán: {e}', 'danger')
