@@ -9,6 +9,7 @@ from flask import Flask, render_template, request, redirect, url_for, session, f
 from werkzeug.utils import secure_filename
 from tensorflow.keras.models import load_model
 from tensorflow.keras.preprocessing.image import load_img, img_to_array
+from tensorflow.keras.optimizers import Adamax  # Added for custom_objects
 import logging
 from functools import wraps  # Added for login_required decorator fix
 
@@ -32,8 +33,9 @@ MODEL = None
 TARGET_SIZE = (240, 240)
 HF_MODEL_URL = "https://huggingface.co/spaces/minhtriizkooooo/EMR-Analysis-Cancer-Detection/raw/main/models/best_weights_model.keras"
 MODEL_FILENAME = "best_weights_model.keras"
-BASE_DIR = Path(__file__).resolve().parent
-MODEL_PATH = BASE_DIR / "models" / MODEL_FILENAME
+MODEL_DIR = Path('/tmp/models')  # Changed to /tmp for writable storage on platforms like Render
+MODEL_DIR.mkdir(parents=True, exist_ok=True)
+MODEL_PATH = MODEL_DIR / MODEL_FILENAME
 
 def load_keras_model():
     """Load model, downloading from HF if necessary."""
@@ -45,9 +47,6 @@ def load_keras_model():
     # 1. KIỂM TRA SỰ TỒN TẠI CỦA FILE
     if not MODEL_PATH.exists() or MODEL_PATH.stat().st_size < 1024:  # Kiểm tra kích thước file (> 1KB)
         logger.warning("⚠️ Model file NOT FOUND or too small locally at %s. Attempting to download from Hugging Face...", MODEL_PATH)
-        
-        # Cố gắng tạo thư mục models/ nếu chưa có
-        MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
         
         # 2. TẢI FILE TỪ HUGGING FACE
         try:
@@ -72,7 +71,7 @@ def load_keras_model():
     # 3. TẢI MODEL VÀO BỘ NHỚ
     try:
         logger.info("🔥 Loading Keras model into memory...")
-        MODEL = load_model(str(MODEL_PATH), compile=False)
+        MODEL = load_model(str(MODEL_PATH), compile=False, custom_objects={'Adamax': Adamax})  # Added custom_objects for optimizer compatibility
         logger.info("✅ Model loaded successfully from local file.")
     except Exception as e:
         logger.error(f"❌ Error loading model after download: {e}")
@@ -106,8 +105,6 @@ def preprocess_image(image_file):
     arr = np.expand_dims(arr, axis=0)
     return arr
 
-# Removed unused profile_csv_data function to clean up code
-
 # --- Routes ---
 @app.route('/')
 def index():
@@ -132,7 +129,7 @@ def login():
 @app.route('/logout')
 def logout():
     session.pop('user', None)
-    flash('Đăng xuất thành công.', 'success')
+    #flash('Đăng xuất thành công.', 'success')
     return redirect(url_for('index'))
 
 @app.route('/dashboard')
@@ -248,7 +245,7 @@ def emr_prediction():
             label = 'Nodule' if p_nodule >= 0.5 else 'Non-nodule'
             prob = p_nodule if p_nodule >= 0.5 else 1.0 - p_nodule
             prediction_result = {'result': label, 'probability': float(np.round(prob, 6)), 'raw_output': float(np.round(p_nodule, 6))}
-            flash('Dự đoán AI hoàn tất.', 'success')
+            #flash('Dự đoán AI hoàn tất.', 'success')
         except Exception as e:
             logger.error("Error during prediction: %s", e)
             flash(f'Lỗi khi xử lý hình ảnh hoặc dự đoán: {e}', 'danger')
