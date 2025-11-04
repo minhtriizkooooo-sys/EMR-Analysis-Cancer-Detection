@@ -1,224 +1,181 @@
 import os
 import io
 import base64
+import requests
+import logging
 import numpy as np
 import pandas as pd
-from pathlib import Path
 from flask import Flask, render_template, request, redirect, url_for, session, flash
 from werkzeug.utils import secure_filename
 from tensorflow.keras.models import load_model
 from tensorflow.keras.preprocessing.image import load_img, img_to_array
-from tensorflow.keras.optimizers import Adamax
-from functools import wraps
-import logging
+from ydata_profiling import ProfileReport
 
-# ======================= LOGGER ==========================
-logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
-logger = logging.getLogger("EMR-AI")
-
-# ======================= FLASK CONFIG =====================
+# ---------------------------------------------------
+# CONFIG
+# ---------------------------------------------------
 app = Flask(__name__)
-app.secret_key = os.environ.get("SECRET_KEY", "super_secret_key_12345")
+app.secret_key = "emr_secret_key"
 
-UPLOAD_DIR = Path("/tmp/uploads")
-UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+UPLOAD_FOLDER = "uploads"
+MODEL_DIR = "models"
+MODEL_PATH = os.path.join(MODEL_DIR, "best_weights_model.keras")
 
-app.config["UPLOAD_FOLDER"] = str(UPLOAD_DIR)
-app.config["ALLOWED_EXTENSIONS"] = {"csv", "xlsx", "xls", "png", "jpg", "jpeg", "gif", "bmp"}
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+os.makedirs(MODEL_DIR, exist_ok=True)
 
-# ======================= MODEL CONFIG =====================
-MODEL = None
-TARGET_SIZE = (240, 240)
-MODEL_FILENAME = "best_weights_model.keras"
-MODEL_DIR = Path("/models")
-MODEL_PATH = MODEL_DIR / MODEL_FILENAME
-MIN_MODEL_SIZE_MB = 5
+# ---------------------------------------------------
+# LOGGING
+# ---------------------------------------------------
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
+# ---------------------------------------------------
+# AUTO DOWNLOAD MODEL (from Hugging Face)
+# ---------------------------------------------------
+MODEL_URL = "https://huggingface.co/spaces/minhtriizkooooo/EMR-Analysis-Cancer-Detection/resolve/main/models/best_weights_model.keras"
 
-def load_keras_model():
-    """Load local Keras model if available."""
-    global MODEL
-    if MODEL is not None:
-        return MODEL
+def download_model():
+    """Tải model từ Hugging Face nếu chưa có."""
+    if not os.path.exists(MODEL_PATH):
+        logging.info("Downloading model from Hugging Face...")
+        response = requests.get(MODEL_URL, stream=True)
+        if response.status_code == 200:
+            with open(MODEL_PATH, "wb") as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    f.write(chunk)
+            logging.info("✅ Model downloaded successfully.")
+        else:
+            logging.error(f"❌ Failed to download model. Status code: {response.status_code}")
 
-    if not MODEL_PATH.exists():
-        logger.error(f"❌ Model not found at {MODEL_PATH}")
-        return None
+download_model()
 
-    if MODEL_PATH.stat().st_size < MIN_MODEL_SIZE_MB * 1024 * 1024:
-        logger.error(f"❌ Model too small or corrupt: {MODEL_PATH.stat().st_size} bytes")
-        return None
+# ---------------------------------------------------
+# LOAD MODEL
+# ---------------------------------------------------
+try:
+    model = load_model(MODEL_PATH)
+    logging.info("✅ Model loaded successfully.")
+except Exception as e:
+    logging.error(f"❌ Failed to load model: {e}")
+    model = None
 
-    try:
-        logger.info(f"🔥 Loading Keras model from {MODEL_PATH}")
-        MODEL = load_model(str(MODEL_PATH), compile=False, custom_objects={"Adamax": Adamax})
-        logger.info("✅ Model loaded successfully.")
-    except Exception as e:
-        logger.error(f"❌ Error loading model: {e}")
-        MODEL = None
-    return MODEL
+# ---------------------------------------------------
+# ROUTES
+# ---------------------------------------------------
 
+@app.route("/")
+def home():
+    return redirect(url_for("login"))
 
-with app.app_context():
-    load_keras_model()
+# ---------------- LOGIN ----------------
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    if request.method == "POST":
+        user_id = request.form.get("userID")
+        password = request.form.get("password")
 
-# ======================= HELPERS ==========================
-def allowed_file(filename):
-    return "." in filename and filename.rsplit(".", 1)[1].lower() in app.config["ALLOWED_EXTENSIONS"]
+        # Demo account (khớp với hướng dẫn trong index.html)
+        if user_id == "user_demo" and password == "Test@123456":
+            session["logged_in"] = True
+            flash("Đăng nhập thành công.", "success")
+            return redirect(url_for("dashboard"))
+        else:
+            flash("Sai ID hoặc mật khẩu!", "danger")
+            return redirect(url_for("login"))
 
-
-def login_required(f):
-    @wraps(f)
-    def decorated_function(*args, **kwargs):
-        if "user" not in session:
-            flash("Vui lòng đăng nhập để truy cập trang này.", "danger")
-            return redirect(url_for("index"))
-        return f(*args, **kwargs)
-
-    return decorated_function
-
-
-def preprocess_image(image_file):
-    """Preprocess image to match training."""
-    if not MODEL:
-        raise RuntimeError("Model not loaded.")
-    img = load_img(image_file, target_size=TARGET_SIZE, color_mode="rgb")
-    arr = img_to_array(img)
-    arr = np.expand_dims(arr, axis=0)
-    return arr
-
-# ======================= ROUTES ===========================
-@app.route("/", methods=["GET"])
-def index():
     return render_template("index.html")
 
-
-@app.route("/login", methods=["POST"])
-def login():
-    username = request.form.get("userID", "").strip()
-    password = request.form.get("password", "").strip()
-
-    if username == "user_demo" and password == "Test@123456":
-        session["user"] = username
-        return redirect(url_for("dashboard"))
-
-    flash("Sai ID hoặc mật khẩu.", "danger")
-    return redirect(url_for("index"))
-
-
-@app.route("/dashboard", methods=["GET"])
-@login_required
+# ---------------- DASHBOARD ----------------
+@app.route("/dashboard")
 def dashboard():
+    if not session.get("logged_in"):
+        return redirect(url_for("login"))
     return render_template("dashboard.html")
 
-
-# ======================= EMR PROFILE ======================
+# ---------------- EMR PROFILE ----------------
 @app.route("/emr_profile", methods=["GET", "POST"])
-@login_required
 def emr_profile():
-    summary, filename = None, None
+    if not session.get("logged_in"):
+        return redirect(url_for("login"))
 
     if request.method == "POST":
-        file = request.files.get("file")
-        if not file or file.filename == "":
-            flash("Không có file nào được tải lên.", "danger")
-            return redirect(request.url)
+        if "file" not in request.files:
+            flash("Không tìm thấy tệp tải lên!", "danger")
+            return redirect(url_for("emr_profile"))
+
+        file = request.files["file"]
+        if file.filename == "":
+            flash("Vui lòng chọn tệp!", "warning")
+            return redirect(url_for("emr_profile"))
 
         filename = secure_filename(file.filename)
+        filepath = os.path.join(UPLOAD_FOLDER, filename)
+        file.save(filepath)
+
         try:
-            stream = io.BytesIO(file.read())
-            if len(stream.getvalue()) > 10 * 1024 * 1024:
-                raise ValueError("File quá lớn (>10MB)")
-
-            if filename.lower().endswith(".csv"):
-                df = pd.read_csv(stream)
-            elif filename.lower().endswith((".xls", ".xlsx")):
-                df = pd.read_excel(stream)
-            else:
-                flash("Chỉ hỗ trợ CSV hoặc Excel.", "danger")
-                return redirect(request.url)
-
-            rows, cols = df.shape
-            summary = f"<h3 class='text-xl font-bold text-green-700 mb-4'>Phân tích cấu trúc dữ liệu</h3>"
-            summary += f"<p><strong>Số dòng:</strong> {rows} | <strong>Số cột:</strong> {cols}</p>"
-            summary += "<ul class='mt-3'>"
-            for col in df.columns:
-                dtype = str(df[col].dtype)
-                missing = df[col].isnull().sum()
-                summary += f"<li><strong>{col}</strong> — kiểu: {dtype}, thiếu: {missing}</li>"
-            summary += "</ul>"
-
+            df = pd.read_csv(filepath) if filename.endswith(".csv") else pd.read_excel(filepath)
+            profile = ProfileReport(df, title="EMR Data Analysis", explorative=True)
+            report_path = os.path.join("templates", "EMR_Profile.html")
+            profile.to_file(report_path)
+            logging.info(f"✅ EMR profile generated: {report_path}")
+            return render_template("EMR_Profile.html")
         except Exception as e:
-            summary = f"<p class='text-red-600 font-semibold'>Lỗi xử lý file: {e}</p>"
+            logging.error(f"Error generating profile: {e}")
+            flash(f"Lỗi xử lý tệp: {e}", "danger")
+            return redirect(url_for("emr_profile"))
 
-    return render_template("emr_profile.html", summary=summary, filename=filename)
+    return render_template("EMR_Profile.html")
 
-
-# ======================= EMR PREDICTION ====================
+# ---------------- IMAGE PREDICTION ----------------
 @app.route("/emr_prediction", methods=["GET", "POST"])
-@login_required
 def emr_prediction():
-    prediction_result, filename, image_b64 = None, None, None
-
-    if MODEL is None:
-        flash("Model AI chưa sẵn sàng. Kiểm tra log.", "danger")
-        return render_template("emr_prediction.html")
+    if not session.get("logged_in"):
+        return redirect(url_for("login"))
 
     if request.method == "POST":
-        uploaded = request.files.get("file")
-        if not uploaded or uploaded.filename == "":
-            flash("Vui lòng chọn file hình ảnh.", "danger")
-            return redirect(request.url)
+        if "file" not in request.files:
+            flash("Không tìm thấy tệp ảnh!", "danger")
+            return redirect(url_for("emr_prediction"))
 
-        if not allowed_file(uploaded.filename):
-            flash("Định dạng file không được hỗ trợ.", "danger")
-            return redirect(request.url)
+        file = request.files["file"]
+        if file.filename == "":
+            flash("Vui lòng chọn ảnh!", "warning")
+            return redirect(url_for("emr_prediction"))
 
-        filename = secure_filename(uploaded.filename)
-        data = uploaded.read()
-        image_b64 = base64.b64encode(data).decode("utf-8")
+        filename = secure_filename(file.filename)
+        filepath = os.path.join(UPLOAD_FOLDER, filename)
+        file.save(filepath)
 
         try:
-            processed = preprocess_image(io.BytesIO(data))
-            preds = MODEL.predict(processed)
-            logger.info(f"Model output: {preds.tolist()}")
+            image = load_img(filepath, target_size=(224, 224))
+            img_array = img_to_array(image) / 255.0
+            img_array = np.expand_dims(img_array, axis=0)
+            prediction = model.predict(img_array)
+            result = "Nodule" if prediction[0][0] > 0.5 else "Non-Nodule"
 
-            if preds.ndim == 2 and preds.shape[1] == 1:
-                p = float(preds[0][0])
-            else:
-                p = float(np.max(preds[0]))
+            # Encode image for HTML display
+            with open(filepath, "rb") as img_file:
+                encoded_img = base64.b64encode(img_file.read()).decode("utf-8")
 
-            if p >= 0.5:
-                label = "Nodule"
-                prob = p
-            else:
-                label = "Non-nodule"
-                prob = 1 - p
+            return render_template("EMR_Prediction.html", result=result, image_data=encoded_img)
 
-            prediction_result = {
-                "result": label,
-                "probability": float(np.round(prob, 5)),
-                "raw_output": float(np.round(p, 5))
-            }
-            flash("Dự đoán hoàn tất.", "success")
         except Exception as e:
-            logger.error(f"Prediction error: {e}")
-            flash(f"Lỗi khi dự đoán: {e}", "danger")
+            logging.error(f"Prediction error: {e}")
+            flash(f"Lỗi dự đoán: {e}", "danger")
+            return redirect(url_for("emr_prediction"))
 
-    return render_template("emr_prediction.html",
-                           prediction=prediction_result,
-                           filename=filename,
-                           image_b64=image_b64)
+    return render_template("EMR_Prediction.html")
 
-
+# ---------------- LOGOUT ----------------
 @app.route("/logout")
 def logout():
     session.clear()
-    return redirect(url_for("index"))
+    flash("Đã đăng xuất.", "info")
+    return redirect(url_for("login"))
 
-
-# ======================= RUN APP ==========================
+# ---------------------------------------------------
+# MAIN ENTRY POINT
+# ---------------------------------------------------
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 7860))  # Tự động cho Render & HF
-    logger.info(f"🚀 EMR Insight AI Server running on port {port}")
-    app.run(host="0.0.0.0", port=port, debug=False, threaded=True)
+    port = int(os.environ.get("PORT", 7860))
+    app.run(host="0.0.0.0", port=port, debug=False)
