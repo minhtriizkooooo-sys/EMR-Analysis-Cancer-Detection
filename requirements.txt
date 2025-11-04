@@ -1,22 +1,23 @@
-# Flask web app
+# --- Web Framework ---
 Flask==2.3.3
 Werkzeug==2.3.7
 gunicorn==23.0.0
 
-# TensorFlow/Keras (Đã hạ cấp phiên bản để tối ưu load model .keras)
-tensorflow-cpu==2.16.1 # Hạ cấp để tăng tính tương thích với Keras cũ
-h5py==3.10.0 # Cần thiết cho Keras và việc đọc file model.
+# --- AI / TensorFlow ---
+tensorflow-cpu==2.16.1
+h5py==3.10.0
+protobuf==3.20.3
 
-# Dependencies
+# --- Data Processing ---
 numpy==1.26.4
-protobuf==3.20.3 # Phiên bản cũ hơn ổn định hơn với Keras 2.x
-requests==2.32.3 # Thêm Requests để tải model
-# Data processing
 pandas==2.2.3
 openpyxl==3.1.5
 Pillow==10.4.0
 matplotlib==3.9.2
 
-# Hugging Face
+# --- Networking / Downloads ---
+requests==2.32.3
 huggingface-hub==0.26.2
 
+# --- Logging & Utilities ---
+rich==13.9.2
