@@ -38,7 +38,7 @@ MODEL = None
 TARGET_SIZE = (240, 240)
 MODEL_FILENAME = "best_weights_model.keras"
 
-MODEL_DIR = Path('/app/models') 
+MODEL_DIR = Path('/models') 
 MODEL_PATH = MODEL_DIR / MODEL_FILENAME
 
 def load_keras_model():
@@ -279,5 +279,6 @@ if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000)) # Dùng 5000 làm mặc định cho local
     logger.info("🚀 EMR AI - FIXED BASE64 CRASH")
     app.run(host="0.0.0.0", port=port, debug=False, threaded=True)
+
 
 
