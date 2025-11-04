@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: emr-analysis-cancer-detection
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app --timeout 120
+    envVars:
+      - key: PORT
+        value: 7860
