@@ -17,51 +17,90 @@ from flask import (
     Flask, flash, redirect, render_template, request, session, url_for
 )
 
-# Thư viện cho Data Analysis (Sử dụng Pandas và openpyxl/numpy/scipy/h5py)
-import pandas as pd
-# Mặc dù không sử dụng TensorFlow/Keras ở đây, nhưng giữ lại các import cơ bản
-# để đảm bảo các thư viện này được cài đặt thành công nếu cần sau này.
 
-# LOGGING ỔN ĐỊNH
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[logging.StreamHandler()]
-)
+# --- Logger ---
+logging.basicConfig(level=logging.INFO, format='%(asctime)s INFO:%(levelname)s:%(name)s:%(message)s')
 logger = logging.getLogger(__name__)
 
+# --- Flask config ---
 app = Flask(__name__)
-app.secret_key = "emr-fixed-2025-no-crash"
+app.secret_key = os.environ.get('SECRET_KEY', 'default_strong_secret_key_12345')
 
-# ✅ GIỚI HẠN SIÊU NHỎ - KHÔNG CRASH
-app.config['MAX_CONTENT_LENGTH'] = 4 * 1024 * 1024  # 4MB MAX
-MAX_FILE_SIZE_MB = 4
+# Cấu hình thư mục và giới hạn
+UPLOAD_DIR = Path('/tmp/uploads')
+app.config['UPLOAD_FOLDER'] = str(UPLOAD_DIR)
 
-ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'bmp'}
+app.config['ALLOWED_EXTENSIONS'] = {'csv', 'xlsx', 'xls', 'png', 'jpg', 'jpeg', 'gif', 'bmp'}
 
-def allowed_file(filename):
-    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+# --- CONFIG CƠ BẢN VÀ GIỚI HẠN TỐI ƯU ---
+MAX_FILE_SIZE_MB = 10 
+# GIẢM GIỚI HẠN DÒNG XỬ LÝ ĐỂ TRÁNH TIMEOUT CỦA GUNICORN (TỪ 20K -> 5K)
+MAX_ROWS_FOR_PROFILE = 5000 
+MIN_MODEL_SIZE_MB = 5 
 
-# ✅ HÀM RESIZE + BASE64 - KHÔNG CRASH
-def safe_image_to_b64(img_bytes, max_size=200):
-    """Chỉ tạo thumbnail 200x200 → ~10KB base64"""
-    try:
-        with Image.open(io.BytesIO(img_bytes)) as img:
-            # RESIZE NHỎ → KHÔNG CRASH
-            img.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
-            
-            # Tạo buffer mới
-            buffer = io.BytesIO()
-            img.save(buffer, format='JPEG', quality=85, optimize=True)
-            buffer.seek(0)
-            
-            # Base64 nhỏ gọn
-            b64 = base64.b64encode(buffer.getvalue()).decode('utf-8')
-            return b64
-    except Exception as e:
-        logger.error(f"Error generating thumbnail: {e}")
+# --- Model config (Local Load) ---
+MODEL = None
+TARGET_SIZE = (240, 240)
+MODEL_FILENAME = "best_weights_model.keras"
+
+MODEL_DIR = Path('/app/models') 
+MODEL_PATH = MODEL_DIR / MODEL_FILENAME
+
+def load_keras_model():
+    """Tải model trực tiếp từ thư mục cục bộ (/app/models) và kiểm tra kích thước."""
+    global MODEL
+    
+    if MODEL is not None:
+        return MODEL
+    
+    min_bytes = MIN_MODEL_SIZE_MB * 1024 * 1024
+    
+    # 1. KIỂM TRA SỰ TỒN TẠI VÀ KÍCH THƯỚC FILE
+    if not MODEL_PATH.exists():
+        logger.error("❌ CRITICAL: Model file NOT FOUND at %s.", MODEL_PATH)
         return None
+    
+    if MODEL_PATH.stat().st_size < min_bytes:
+        logger.error("❌ CRITICAL: Model file is too small (%s bytes). Likely an error file.", MODEL_PATH.stat().st_size)
+        return None
+        
+    # 2. TẢI MODEL VÀO BỘ NHỚ
+    try:
+        logger.info("🔥 Loading Keras model from local path: %s", MODEL_PATH)
+        MODEL = load_model(str(MODEL_PATH), compile=False, custom_objects={'Adamax': Adamax}) 
+        logger.info("✅ Model loaded successfully from local file.")
+    except Exception as e:
+        logger.error(f"❌ CRITICAL: Error loading model from local file: {e}")
+        MODEL = None
+    
+    return MODEL
 
+# Tải model ngay khi ứng dụng bắt đầu
+with app.app_context():
+    load_keras_model()
+
+# --- Helpers ---
+def allowed_file(filename):
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in app.config['ALLOWED_EXTENSIONS']
+
+def login_required(f):
+    @wraps(f) 
+    def decorated_function(*args, **kwargs):
+        if 'user' not in session:
+            flash('Vui lòng đăng nhập để truy cập trang này.', 'danger')
+            return redirect(url_for('index'))
+        return f(*args, **kwargs)
+    decorated_function.__name__ = f.__name__
+    return decorated_function
+
+def preprocess_image_match_training(image_file):
+    """Preprocessing matched to Colab training (240x240 RGB)."""
+    if not MODEL:
+        raise RuntimeError("Model is not loaded.")
+    img = load_img(image_file, target_size=TARGET_SIZE, color_mode='rgb')
+    arr = img_to_array(img)
+    arr = np.expand_dims(arr, axis=0)
+    return arr
 
 
 
@@ -243,3 +282,4 @@ if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000)) # Dùng 5000 làm mặc định cho local
     logger.info("🚀 EMR AI - FIXED BASE64 CRASH")
     app.run(host="0.0.0.0", port=port, debug=False, threaded=True)
+
