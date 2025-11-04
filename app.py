@@ -30,12 +30,11 @@ os.makedirs(MODEL_DIR, exist_ok=True)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 # ---------------------------------------------------
-# MODEL DOWNLOAD (from Hugging Face repo)
+# MODEL DOWNLOAD
 # ---------------------------------------------------
 MODEL_URL = "https://huggingface.co/minhtriizkooooo/EMR-Analysis-Cancer_Detection/resolve/main/models/best_weights_model.keras"
 
 def download_model():
-    """Tự động tải model từ Hugging Face nếu chưa có."""
     if not os.path.exists(MODEL_PATH):
         logging.info("🔽 Đang tải model từ Hugging Face...")
         try:
@@ -77,6 +76,7 @@ def login():
 
         if user_id == "user_demo" and password == "Test@123456":
             session["logged_in"] = True
+            session["user"] = user_id  # 🔥 FIX QUAN TRỌNG
             flash("Đăng nhập thành công.", "success")
             return redirect(url_for("dashboard"))
         else:
