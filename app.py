@@ -32,32 +32,38 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 # ---------------------------------------------------
 # AUTO DOWNLOAD MODEL (from Hugging Face)
 # ---------------------------------------------------
-MODEL_URL = "https://huggingface.co/spaces/minhtriizkooooo/EMR-Analysis-Cancer-Detection/resolve/main/models/best_weights_model.keras"
+MODEL_URL = "https://huggingface.co/minhtriizkooooo/EMR-Analysis-Cancer-Detection/resolve/main/models/best_weights_model.keras"
 
 def download_model():
     """Tải model từ Hugging Face nếu chưa có."""
     if not os.path.exists(MODEL_PATH):
-        logging.info("Downloading model from Hugging Face...")
-        response = requests.get(MODEL_URL, stream=True)
-        if response.status_code == 200:
-            with open(MODEL_PATH, "wb") as f:
-                for chunk in response.iter_content(chunk_size=8192):
-                    f.write(chunk)
-            logging.info("✅ Model downloaded successfully.")
-        else:
-            logging.error(f"❌ Failed to download model. Status code: {response.status_code}")
+        logging.info("📥 Downloading model from Hugging Face...")
+        try:
+            response = requests.get(MODEL_URL, stream=True, timeout=60)
+            if response.status_code == 200:
+                with open(MODEL_PATH, "wb") as f:
+                    for chunk in response.iter_content(chunk_size=8192):
+                        f.write(chunk)
+                logging.info("✅ Model downloaded successfully.")
+            else:
+                logging.error(f"❌ Failed to download model. Status code: {response.status_code}")
+        except Exception as e:
+            logging.error(f"❌ Exception during model download: {e}")
 
 download_model()
 
 # ---------------------------------------------------
 # LOAD MODEL
 # ---------------------------------------------------
-try:
-    model = load_model(MODEL_PATH)
-    logging.info("✅ Model loaded successfully.")
-except Exception as e:
-    logging.error(f"❌ Failed to load model: {e}")
-    model = None
+model = None
+if os.path.exists(MODEL_PATH):
+    try:
+        model = load_model(MODEL_PATH)
+        logging.info("✅ Model loaded successfully.")
+    except Exception as e:
+        logging.error(f"❌ Failed to load model: {e}")
+else:
+    logging.error(f"❌ Model not found at {MODEL_PATH}")
 
 # ---------------------------------------------------
 # ROUTES
@@ -74,7 +80,7 @@ def login():
         user_id = request.form.get("userID")
         password = request.form.get("password")
 
-        # Demo account (khớp với hướng dẫn trong index.html)
+        # Demo credentials (match index.html hint)
         if user_id == "user_demo" and password == "Test@123456":
             session["logged_in"] = True
             flash("Đăng nhập thành công.", "success")
@@ -99,13 +105,9 @@ def emr_profile():
         return redirect(url_for("login"))
 
     if request.method == "POST":
-        if "file" not in request.files:
-            flash("Không tìm thấy tệp tải lên!", "danger")
-            return redirect(url_for("emr_profile"))
-
-        file = request.files["file"]
-        if file.filename == "":
-            flash("Vui lòng chọn tệp!", "warning")
+        file = request.files.get("file")
+        if not file or file.filename == "":
+            flash("Vui lòng chọn tệp CSV hoặc Excel!", "warning")
             return redirect(url_for("emr_profile"))
 
         filename = secure_filename(file.filename)
@@ -113,10 +115,15 @@ def emr_profile():
         file.save(filepath)
 
         try:
-            df = pd.read_csv(filepath) if filename.endswith(".csv") else pd.read_excel(filepath)
+            if filename.endswith(".csv"):
+                df = pd.read_csv(filepath)
+            else:
+                df = pd.read_excel(filepath)
+
             profile = ProfileReport(df, title="EMR Data Analysis", explorative=True)
             report_path = os.path.join("templates", "EMR_Profile.html")
             profile.to_file(report_path)
+
             logging.info(f"✅ EMR profile generated: {report_path}")
             return render_template("EMR_Profile.html")
         except Exception as e:
@@ -133,18 +140,18 @@ def emr_prediction():
         return redirect(url_for("login"))
 
     if request.method == "POST":
-        if "file" not in request.files:
-            flash("Không tìm thấy tệp ảnh!", "danger")
-            return redirect(url_for("emr_prediction"))
-
-        file = request.files["file"]
-        if file.filename == "":
+        file = request.files.get("file")
+        if not file or file.filename == "":
             flash("Vui lòng chọn ảnh!", "warning")
             return redirect(url_for("emr_prediction"))
 
         filename = secure_filename(file.filename)
         filepath = os.path.join(UPLOAD_FOLDER, filename)
         file.save(filepath)
+
+        if model is None:
+            flash("Model chưa được tải. Vui lòng thử lại sau!", "danger")
+            return redirect(url_for("emr_prediction"))
 
         try:
             image = load_img(filepath, target_size=(224, 224))
@@ -153,12 +160,10 @@ def emr_prediction():
             prediction = model.predict(img_array)
             result = "Nodule" if prediction[0][0] > 0.5 else "Non-Nodule"
 
-            # Encode image for HTML display
             with open(filepath, "rb") as img_file:
                 encoded_img = base64.b64encode(img_file.read()).decode("utf-8")
 
             return render_template("EMR_Prediction.html", result=result, image_data=encoded_img)
-
         except Exception as e:
             logging.error(f"Prediction error: {e}")
             flash(f"Lỗi dự đoán: {e}", "danger")
