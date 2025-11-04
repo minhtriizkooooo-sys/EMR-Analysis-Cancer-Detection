@@ -13,11 +13,6 @@ from functools import wraps
 import requests
 import logging
 
-from flask import (
-    Flask, flash, redirect, render_template, request, session, url_for
-)
-
-
 # --- Logger ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s INFO:%(levelname)s:%(name)s:%(message)s')
 logger = logging.getLogger(__name__)
@@ -101,6 +96,7 @@ def preprocess_image_match_training(image_file):
     arr = img_to_array(img)
     arr = np.expand_dims(arr, axis=0)
     return arr
+
 
 
 
@@ -271,6 +267,7 @@ def emr_prediction():
 
 
 
+
 @app.route("/logout")
 def logout():
     session.clear()
@@ -279,7 +276,8 @@ def logout():
 
 if __name__ == "__main__":
     # KHÔNG DÙNG 10000. DÙNG BIẾN MÔI TRƯỜNG $PORT DO Render CUNG CẤP
-    port = int(os.environ.get("PORT", 5000)) # Dùng 5000 làm mặc định cho local
+    port = int(os.environ.get("PORT", 10000)) # Dùng 5000 làm mặc định cho local
     logger.info("🚀 EMR AI - FIXED BASE64 CRASH")
     app.run(host="0.0.0.0", port=port, debug=False, threaded=True)
+
 
