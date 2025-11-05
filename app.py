@@ -98,7 +98,7 @@ def dashboard():
 
 
 # --- EMR Profile Analysis (CSV/Excel) ---
-@app.route("/emr_profile", methods=["POST"])
+@app.route("/emr_profile", methods=["GET", "POST"])
 def emr_profile():
     if "user" not in session:
         return redirect(url_for("index"))
@@ -141,7 +141,7 @@ def emr_profile():
 
 
 # --- Image Prediction (Nodule / Non-Nodule) ---
-@app.route("/emr_prediction", methods=["POST"])
+@app.route("/emr_prediction", methods=["GET", "POST"])
 def emr_prediction():
     if "user" not in session:
         return redirect(url_for("index"))
@@ -205,3 +205,4 @@ def logout():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port, debug=True)
+
