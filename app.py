@@ -76,8 +76,8 @@ def dashboard():
     return render_template("dashboard.html", user=session["user"])
 
 # --- EMR Profile Analysis (CSV) ---
-@app.route("/analyze_emr", methods=["POST"])
-def analyze_emr():
+@app.route("/emr_profile", methods=["GET", "POST"])
+def emr_profile():
     if "file" not in request.files:
         flash("Không tìm thấy file tải lên!", "danger")
         return redirect(url_for("dashboard"))
@@ -108,8 +108,8 @@ def analyze_emr():
         return redirect(url_for("dashboard"))
 
 # --- Image Prediction (Nodule/Non-Nodule) ---
-@app.route("/predict_image", methods=["POST"])
-def predict_image():
+@app.route("/emr_prediction", methods=["GET", "POST"])
+def emr_prediction():
     if "image" not in request.files:
         flash("Không tìm thấy file ảnh!", "danger")
         return redirect(url_for("dashboard"))
@@ -151,4 +151,5 @@ def logout():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
 
