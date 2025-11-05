@@ -15,8 +15,9 @@ Pillow==10.4.0
 # --- Data Profiling ---
 ydata-profiling==4.7.0
 
-# --- Utility ---
-requests==2.32.3
-
 # --- Image Processing ---
 opencv-python-headless==4.10.0.84
+
+# --- Utility ---
+requests==2.32.3
+huggingface-hub==0.25.1
