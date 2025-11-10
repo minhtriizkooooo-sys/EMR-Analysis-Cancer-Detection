@@ -114,8 +114,8 @@ def emr_prediction():
 @app.route("/login", methods=["GET", "POST"])
 def login():
     if request.method == "POST":
-        username = request.form.get("username")
-        password = request.form.get("password")
+        userID = request.form.get("user_demo")
+        password = request.form.get("Test@123456")
         # TODO: Replace with real user check
         if username == "admin" and password == "admin":
             session["user"] = username
@@ -132,3 +132,4 @@ def logout():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
+
