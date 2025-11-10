@@ -124,12 +124,12 @@ def emr_profile():
             profile = ProfileReport(df, minimal=True, explorative=True)
             report_html = profile.to_html()
 
-            return render_template("EMR_Profile.html", summary=report_html)
+            return render_template("emr_profile.html", summary=report_html)
         except Exception as e:
             flash(f"Lỗi khi xử lý dữ liệu: {e}", "danger")
             return redirect(request.url)
 
-    return render_template("EMR_Profile.html", report_html=None)
+    return render_template("emr_profile.html", report_html=None)
 
 # ================================
 # --- EMR Image Prediction ---
@@ -189,7 +189,7 @@ def emr_prediction():
             flash(f"Lỗi khi dự đoán ảnh: {e}", "danger")
             return redirect(request.url)
 
-    return render_template("EMR_Prediction.html")
+    return render_template("emr_prediction.html")
 
 # ================================
 # --- Runner ---
@@ -197,3 +197,4 @@ def emr_prediction():
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 10000))
     app.run(host="0.0.0.0", port=port, debug=False)
+
