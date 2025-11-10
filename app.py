@@ -1,165 +1,133 @@
 import os
 import io
 import base64
-import zipfile
-import requests
+import tempfile
 import numpy as np
 import pandas as pd
-from flask import Flask, render_template, request, redirect, url_for, flash
+from flask import Flask, render_template, request, redirect, url_for, session, flash, send_file
 from werkzeug.utils import secure_filename
 from tensorflow.keras.models import load_model
 from tensorflow.keras.preprocessing.image import load_img, img_to_array
 from ydata_profiling import ProfileReport
 
-# ----------------------------
-# Flask setup
-# ----------------------------
+# --- Flask Setup ---
 app = Flask(__name__)
-app.secret_key = "secret_key"
+app.secret_key = os.environ.get("FLASK_SECRET_KEY", "supersecretkey")
 
-# Đường dẫn tạm
 UPLOAD_FOLDER = "uploads"
 MODEL_FOLDER = "models"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(MODEL_FOLDER, exist_ok=True)
 
-# ----------------------------
-# Tải hoặc giải nén model
-# ----------------------------
+# --- Model Loading ---
 MODEL_PATH = os.path.join(MODEL_FOLDER, "best_weights_model.keras")
 
-def extract_model():
-    """Tự động hợp nhất và giải nén các phần model nếu cần"""
-    if not os.path.exists(MODEL_PATH):
-        parts = [f"models/best_weights_model.keras.00{i}" for i in range(1, 5)]
-        if all(os.path.exists(p) for p in parts):
-            print("🔄 Extracting model parts...")
-            with open(MODEL_PATH, "wb") as f_out:
-                for p in parts:
-                    with open(p, "rb") as f_in:
-                        f_out.write(f_in.read())
-            print("✅ Model reconstructed successfully.")
-        else:
-            print("⚠️ Model file not found. Please upload model parts.")
+# Nếu chỉ có các phần .keras.001-.004, ghép lại
+if not os.path.exists(MODEL_PATH):
+    parts = sorted([f for f in os.listdir(MODEL_FOLDER) if f.startswith("best_weights_model.keras.")])
+    if parts:
+        with open(MODEL_PATH, "wb") as outfile:
+            for part in parts:
+                with open(os.path.join(MODEL_FOLDER, part), "rb") as infile:
+                    outfile.write(infile.read())
+        print(f"✅ Model ghép thành công: {MODEL_PATH}")
+    else:
+        print("⚠️ Model file missing! Vui lòng upload model parts hoặc file .keras")
+        # Raise an exception để Render không khởi chạy khi thiếu model
+        raise FileNotFoundError("Model file not found. Please upload model parts.")
 
-extract_model()
+model = load_model(MODEL_PATH)
+print("✅ Model loaded successfully.")
 
-# ----------------------------
-# Load model nếu có
-# ----------------------------
-model = None
-if os.path.exists(MODEL_PATH):
-    try:
-        model = load_model(MODEL_PATH)
-        print("✅ Model loaded successfully.")
-    except Exception as e:
-        print(f"❌ Error loading model: {e}")
-else:
-    print("⚠️ Model file missing!")
+# --- Routes ---
+@app.route("/")
+def home():
+    return redirect(url_for("dashboard"))
 
-# ----------------------------
-# ROUTES
-# ----------------------------
-
-@app.route('/')
-def index():
-    return render_template('index.html')
-
-@app.route('/dashboard')
+@app.route("/dashboard")
 def dashboard():
-    return render_template('dashboard.html')
+    if "user" not in session:
+        return redirect(url_for("login"))
+    return render_template("dashboard.html")
 
-# ---------- EMR PROFILE ----------
-@app.route('/emr_profile', methods=['GET', 'POST'])
+@app.route("/emr_profile", methods=["GET", "POST"])
 def emr_profile():
-    if request.method == 'POST':
-        if 'file' not in request.files:
-            flash("Không tìm thấy file tải lên.")
-            return redirect(request.url)
-        
-        file = request.files['file']
-        if file.filename == '':
-            flash("Vui lòng chọn file CSV hoặc Excel.")
-            return redirect(request.url)
+    if "user" not in session:
+        return redirect(url_for("login"))
+    
+    profile_report = None
+    if request.method == "POST":
+        file = request.files.get("file")
+        if file:
+            filename = secure_filename(file.filename)
+            filepath = os.path.join(UPLOAD_FOLDER, filename)
+            file.save(filepath)
 
-        filename = secure_filename(file.filename)
-        file_path = os.path.join(UPLOAD_FOLDER, filename)
-        file.save(file_path)
-
-        try:
-            if filename.endswith('.csv'):
-                df = pd.read_csv(file_path)
-            else:
-                df = pd.read_excel(file_path)
-
-            # Tạo báo cáo
+            df = pd.read_csv(filepath) if filename.endswith(".csv") else pd.read_excel(filepath)
             profile = ProfileReport(df, title="Báo cáo Phân tích Dữ liệu EMR", explorative=True)
-            profile_html = profile.to_html()
+            report_file = os.path.join(UPLOAD_FOLDER, f"{filename}_report.html")
+            profile.to_file(report_file)
+            return send_file(report_file)
+        else:
+            flash("Vui lòng chọn file CSV hoặc Excel", "warning")
 
-            return render_template("EMR_Profile.html", report_html=profile_html)
-        except Exception as e:
-            flash(f"Lỗi khi xử lý file: {str(e)}")
-            return redirect(request.url)
-    return render_template("EMR_Profile.html", report_html=None)
+    return render_template("EMR_Profile.html")
 
-# ---------- EMR PREDICTION ----------
-@app.route('/emr_prediction', methods=['GET', 'POST'])
+@app.route("/emr_prediction", methods=["GET", "POST"])
 def emr_prediction():
-    if request.method == 'POST':
-        if 'file' not in request.files:
-            flash("Không tìm thấy file ảnh.")
-            return redirect(request.url)
-        
-        file = request.files['file']
-        if file.filename == '':
-            flash("Vui lòng chọn ảnh để dự đoán.")
-            return redirect(request.url)
+    if "user" not in session:
+        return redirect(url_for("login"))
+    
+    prediction = None
+    filename = None
+    image_b64 = None
 
-        filename = secure_filename(file.filename)
-        file_path = os.path.join(UPLOAD_FOLDER, filename)
-        file.save(file_path)
+    if request.method == "POST":
+        file = request.files.get("file")
+        if file:
+            filename = secure_filename(file.filename)
+            filepath = os.path.join(UPLOAD_FOLDER, filename)
+            file.save(filepath)
 
-        try:
-            if model is None:
-                flash("Model chưa được tải.")
-                return redirect(request.url)
-
-            # Chuẩn bị ảnh
-            image = load_img(file_path, target_size=(240, 240))
-            image = img_to_array(image)
-            image = np.expand_dims(image, axis=0) / 255.0
+            # Đọc ảnh và resize về 240x240
+            image = load_img(filepath, target_size=(240, 240))
+            image_array = img_to_array(image) / 255.0
+            image_array = np.expand_dims(image_array, axis=0)
 
             # Dự đoán
-            pred = model.predict(image)[0][0]
-            result = "Nodule" if pred > 0.5 else "Non-Nodule"
-            probability = round(float(pred) * 100, 2)
+            prob = model.predict(image_array)[0][0]
+            result = "Nodule" if prob > 0.5 else "Non-nodule"
+            prediction = {"result": result, "probability": float(prob)}
 
-            # Hiển thị ảnh
-            with open(file_path, "rb") as f:
-                img_bytes = f.read()
-            img_b64 = base64.b64encode(img_bytes).decode('utf-8')
+            # Chuyển ảnh sang base64 để hiển thị trên web
+            with open(filepath, "rb") as img_file:
+                image_b64 = base64.b64encode(img_file.read()).decode("utf-8")
+        else:
+            flash("Vui lòng chọn hình ảnh để dự đoán", "warning")
 
-            return render_template(
-                "EMR_Prediction.html",
-                prediction=result,
-                probability=probability,
-                image_data=img_b64
-            )
-        except Exception as e:
-            flash(f"Lỗi dự đoán: {str(e)}")
-            return redirect(request.url)
+    return render_template("EMR_Prediction.html",
+                           prediction=prediction,
+                           filename=filename,
+                           image_b64=image_b64)
 
-    return render_template("EMR_Prediction.html", prediction=None)
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    if request.method == "POST":
+        username = request.form.get("username")
+        password = request.form.get("password")
+        # TODO: Replace with real user check
+        if username == "admin" and password == "admin":
+            session["user"] = username
+            return redirect(url_for("dashboard"))
+        flash("Sai tên đăng nhập hoặc mật khẩu", "danger")
+    return render_template("index.html")
 
-# ----------------------------
-# MAIN
-# ----------------------------
-i
+@app.route("/logout")
+def logout():
+    session.pop("user", None)
+    return redirect(url_for("login"))
 
-
-
+# --- Main ---
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 10000))
-    logger.info("🚀 EMR AI App Started")
-    app.run(host="0.0.0.0", port=port, debug=False, threaded=True)
-
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
