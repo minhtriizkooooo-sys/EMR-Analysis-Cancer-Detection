@@ -10,6 +10,9 @@ from tensorflow.keras.models import load_model
 from tensorflow.keras.preprocessing.image import load_img, img_to_array
 from ydata_profiling import ProfileReport
 
+# Thêm thư viện download từ Hugging Face
+from huggingface_hub import hf_hub_download
+
 # --- Flask Setup ---
 app = Flask(__name__)
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", "supersecretkey")
@@ -22,19 +25,18 @@ os.makedirs(MODEL_FOLDER, exist_ok=True)
 # --- Model Loading ---
 MODEL_PATH = os.path.join(MODEL_FOLDER, "best_weights_model.keras")
 
-# Nếu chỉ có các phần .keras.001-.004, ghép lại
+# Nếu chưa có model, tải từ Hugging Face
 if not os.path.exists(MODEL_PATH):
-    parts = sorted([f for f in os.listdir(MODEL_FOLDER) if f.startswith("best_weights_model.keras.")])
-    if parts:
-        with open(MODEL_PATH, "wb") as outfile:
-            for part in parts:
-                with open(os.path.join(MODEL_FOLDER, part), "rb") as infile:
-                    outfile.write(infile.read())
-        print(f"✅ Model ghép thành công: {MODEL_PATH}")
-    else:
-        print("⚠️ Model file missing! Vui lòng upload model parts hoặc file .keras")
-        # Raise an exception để Render không khởi chạy khi thiếu model
-        raise FileNotFoundError("Model file not found. Please upload model parts.")
+    try:
+        print("⚠️ Model not found locally, downloading from Hugging Face...")
+        MODEL_PATH = hf_hub_download(
+            repo_id="minhtriizkooooo/EMR-Analysis-Cancer-Detection",
+            filename="models/best_weights_model.keras",
+            repo_type="space"  # Repo của bạn là Space
+        )
+        print(f"✅ Model downloaded successfully: {MODEL_PATH}")
+    except Exception as e:
+        raise FileNotFoundError(f"Model file not found and failed to download: {e}")
 
 model = load_model(MODEL_PATH)
 print("✅ Model loaded successfully.")
@@ -55,7 +57,6 @@ def emr_profile():
     if "user" not in session:
         return redirect(url_for("login"))
     
-    profile_report = None
     if request.method == "POST":
         file = request.files.get("file")
         if file:
