@@ -16,7 +16,7 @@ import cv2
 # ================================
 # --- Flask Setup ---
 # ================================
-app = Flask(__name__)
+app = Flask(__name__, template_folder="templates", static_folder="static")
 app.secret_key = os.getenv("SECRET_KEY", "emr_secret_key")
 
 ALLOWED_IMAGE_EXTENSIONS = {"png", "jpg", "jpeg", "bmp"}
@@ -31,6 +31,7 @@ os.makedirs("models", exist_ok=True)
 MODEL_PATH = "models/best_weights_model.keras"
 HF_URL = "https://huggingface.co/spaces/minhtriizkooooo/EMR-Analysis-Cancer-Detection/resolve/main/models/best_weights_model.keras"
 model = None
+
 
 def download_and_load_model():
     global model
@@ -57,6 +58,7 @@ def download_and_load_model():
         except Exception as e:
             print(f"❌ Model load failed: {e}")
 
+
 download_and_load_model()
 
 # ================================
@@ -65,12 +67,14 @@ download_and_load_model()
 def allowed_file(filename, allowed_set):
     return "." in filename and filename.rsplit(".", 1)[1].lower() in allowed_set
 
+
 # ================================
 # --- Routes ---
 # ================================
 @app.route("/")
 def index():
     return render_template("index.html")
+
 
 # --- LOGIN / LOGOUT ---
 @app.route("/login", methods=["POST"])
@@ -84,10 +88,12 @@ def login():
     flash("Sai tài khoản hoặc mật khẩu!", "danger")
     return redirect(url_for("index"))
 
+
 @app.route("/logout")
 def logout():
     session.clear()
     return redirect(url_for("index"))
+
 
 # --- DASHBOARD ---
 @app.route("/dashboard")
@@ -96,11 +102,15 @@ def dashboard():
         return redirect(url_for("index"))
     return render_template("dashboard.html")
 
+
 # ================================
 # --- EMR Profiling ---
 # ================================
 @app.route("/emr_profile", methods=["GET", "POST"])
 def emr_profile():
+    if "user" not in session:
+        return redirect(url_for("index"))
+
     if request.method == "POST":
         file = request.files.get("file")
         if not file or file.filename == "":
@@ -124,18 +134,27 @@ def emr_profile():
             profile = ProfileReport(df, minimal=True, explorative=True)
             report_html = profile.to_html()
 
-            return render_template("emr_profile.html", summary=report_html)
+            return render_template(
+                "emr_profile.html",
+                summary=report_html,
+                filename=filename,
+                session=session,
+            )
         except Exception as e:
             flash(f"Lỗi khi xử lý dữ liệu: {e}", "danger")
             return redirect(request.url)
 
-    return render_template("emr_profile.html", report_html=None)
+    return render_template("emr_profile.html", summary=None, filename=None, session=session)
+
 
 # ================================
 # --- EMR Image Prediction ---
 # ================================
 @app.route("/emr_prediction", methods=["GET", "POST"])
 def emr_prediction():
+    if "user" not in session:
+        return redirect(url_for("index"))
+
     if request.method == "POST":
         file = request.files.get("file")
         if not file or file.filename == "":
@@ -151,12 +170,10 @@ def emr_prediction():
         file.save(filepath)
 
         try:
-            # === Colab-style preprocessing ===
             img = cv2.imread(filepath)
             img = cv2.resize(img, (240, 240))
             img = np.expand_dims(img, axis=0)
 
-            # Predict
             if model is None:
                 flash("Model chưa được tải. Kiểm tra lại file model.", "danger")
                 return redirect(request.url)
@@ -167,7 +184,6 @@ def emr_prediction():
             result = "Nodule" if binary_prediction == 1 else "Non-Nodule"
             confidence = round(prob * 100, 2) if result == "Nodule" else round((1 - prob) * 100, 2)
 
-            # Visualization overlay
             img_cv = cv2.imread(filepath)
             color = (0, 255, 0) if result == "Nodule" else (255, 0, 0)
             img_cv = cv2.putText(
@@ -178,18 +194,20 @@ def emr_prediction():
             img_base64 = base64.b64encode(buffer).decode("utf-8")
 
             return render_template(
-                "EMR_Prediction.html",
+                "emr_prediction.html",
                 filename=filename,
                 result=result,
                 confidence=confidence,
-                img_data=img_base64
+                img_data=img_base64,
+                session=session,
             )
 
         except Exception as e:
             flash(f"Lỗi khi dự đoán ảnh: {e}", "danger")
             return redirect(request.url)
 
-    return render_template("emr_prediction.html")
+    return render_template("emr_prediction.html", session=session)
+
 
 # ================================
 # --- Runner ---
@@ -197,4 +215,3 @@ def emr_prediction():
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 10000))
     app.run(host="0.0.0.0", port=port, debug=False)
-
