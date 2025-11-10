@@ -37,8 +37,11 @@ def download_and_load_model():
     if not os.path.exists(MODEL_PATH):
         print("🔽 Model not found — downloading from Hugging Face...")
         try:
-            r = requests.get(HF_URL, stream=True)
+            r = requests.get(HF_URL, stream=True, timeout=30)
             if r.status_code == 200:
+                content = r.content
+                if len(content) < 1_000_000:
+                    print("⚠️ Model file nhỏ bất thường — có thể tải lỗi.")
                 with open(MODEL_PATH, "wb") as f:
                     f.write(r.content)
                 print("✅ Model downloaded successfully.")
@@ -121,8 +124,7 @@ def emr_profile():
             profile = ProfileReport(df, minimal=True, explorative=True)
             report_html = profile.to_html()
 
-            return render_template("EMR_Profile.html", report_html=report_html)
-
+            return render_template("emr_profile.html", summary=report_html)
         except Exception as e:
             flash(f"Lỗi khi xử lý dữ liệu: {e}", "danger")
             return redirect(request.url)
@@ -187,7 +189,12 @@ def emr_prediction():
             flash(f"Lỗi khi dự đoán ảnh: {e}", "danger")
             return redirect(request.url)
 
-    return render_template("EMR_Prediction.html", filename=None)
+   return render_template(
+    "emr_prediction.html",
+    filename=filename,
+    image_b64=img_base64,
+    prediction={"result": result, "probability": prob}
+)
 
 # ================================
 # --- Runner ---
@@ -195,3 +202,4 @@ def emr_prediction():
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 10000))
     app.run(host="0.0.0.0", port=port, debug=False)
+
