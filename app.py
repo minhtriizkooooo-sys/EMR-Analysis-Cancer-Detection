@@ -11,34 +11,32 @@ from tensorflow.keras.preprocessing.image import load_img, img_to_array
 from ydata_profiling import ProfileReport
 from huggingface_hub import hf_hub_download
 
+
+
 # --- Flask Setup ---
 app = Flask(__name__)
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", "supersecretkey")
 
-UPLOAD_FOLDER = "uploads"
 MODEL_FOLDER = "models"
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(MODEL_FOLDER, exist_ok=True)
-
-# --- Model Loading ---
 MODEL_PATH = os.path.join(MODEL_FOLDER, "best_weights_model.keras")
 
-# Nếu chưa có model, tải từ Hugging Face
+# --- Model Loading ---
 if not os.path.exists(MODEL_PATH):
     try:
         print("⚠️ Model not found locally, downloading from Hugging Face...")
         MODEL_PATH = hf_hub_download(
             repo_id="minhtriizkooooo/EMR-Analysis-Cancer-Detection",
-            filename="models/best_weights_model.keras",
-            repo_type="space"  # Repo của bạn là Space
+            filename="models/best_weights_model.keras"  # Giữ nguyên đường dẫn gốc
         )
         print(f"✅ Model downloaded successfully: {MODEL_PATH}")
     except Exception as e:
-        raise FileNotFoundError(f"❌ Model file not found and failed to download: {e}")
+        raise FileNotFoundError(f"❌ Failed to download model from Hugging Face: {e}")
 
-# Tải mô hình
+# Load model
 model = load_model(MODEL_PATH)
 print("✅ Model loaded successfully.")
+
 
 # --- Routes ---
 @app.route("/")
@@ -79,7 +77,7 @@ def emr_profile():
         else:
             flash("Vui lòng chọn file CSV hoặc Excel", "warning")
 
-    return render_template("EMR_Profile.html")
+    return render_template("emr_profile.html")
 
 @app.route("/emr_prediction", methods=["GET", "POST"])
 def emr_prediction():
@@ -113,7 +111,7 @@ def emr_prediction():
         else:
             flash("Vui lòng chọn hình ảnh để dự đoán", "warning")
 
-    return render_template("EMR_Prediction.html",
+    return render_template("emr_prediction.html",
                            prediction=prediction,
                            filename=filename,
                            image_b64=image_b64)
@@ -127,7 +125,7 @@ def login():
         # Demo login
         if userID == "user_demo" and password == "Test@123456":
             session["user"] = userID
-            flash("Đăng nhập thành công!", "success")
+            #flash("Đăng nhập thành công!", "success")
             return redirect(url_for("dashboard"))
         else:
             flash("Sai tên đăng nhập hoặc mật khẩu", "danger")
@@ -144,3 +142,4 @@ def logout():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
+
