@@ -9,8 +9,6 @@ from werkzeug.utils import secure_filename
 from tensorflow.keras.models import load_model
 from tensorflow.keras.preprocessing.image import load_img, img_to_array
 from ydata_profiling import ProfileReport
-
-# Thêm thư viện download từ Hugging Face
 from huggingface_hub import hf_hub_download
 
 # --- Flask Setup ---
@@ -36,15 +34,16 @@ if not os.path.exists(MODEL_PATH):
         )
         print(f"✅ Model downloaded successfully: {MODEL_PATH}")
     except Exception as e:
-        raise FileNotFoundError(f"Model file not found and failed to download: {e}")
+        raise FileNotFoundError(f"❌ Model file not found and failed to download: {e}")
 
+# Tải mô hình
 model = load_model(MODEL_PATH)
 print("✅ Model loaded successfully.")
 
 # --- Routes ---
 @app.route("/")
 def home():
-    return redirect(url_for("dashboard"))
+    return redirect(url_for("login"))
 
 @app.route("/dashboard")
 def dashboard():
@@ -64,7 +63,15 @@ def emr_profile():
             filepath = os.path.join(UPLOAD_FOLDER, filename)
             file.save(filepath)
 
-            df = pd.read_csv(filepath) if filename.endswith(".csv") else pd.read_excel(filepath)
+            try:
+                if filename.endswith(".csv"):
+                    df = pd.read_csv(filepath)
+                else:
+                    df = pd.read_excel(filepath)
+            except Exception as e:
+                flash(f"Lỗi đọc file: {e}", "danger")
+                return redirect(url_for("emr_profile"))
+
             profile = ProfileReport(df, title="Báo cáo Phân tích Dữ liệu EMR", explorative=True)
             report_file = os.path.join(UPLOAD_FOLDER, f"{filename}_report.html")
             profile.to_file(report_file)
@@ -90,19 +97,19 @@ def emr_prediction():
             filepath = os.path.join(UPLOAD_FOLDER, filename)
             file.save(filepath)
 
-            # Đọc ảnh và resize về 240x240
-            image = load_img(filepath, target_size=(240, 240))
-            image_array = img_to_array(image) / 255.0
-            image_array = np.expand_dims(image_array, axis=0)
+            try:
+                image = load_img(filepath, target_size=(240, 240))
+                image_array = img_to_array(image) / 255.0
+                image_array = np.expand_dims(image_array, axis=0)
 
-            # Dự đoán
-            prob = model.predict(image_array)[0][0]
-            result = "Nodule" if prob > 0.5 else "Non-nodule"
-            prediction = {"result": result, "probability": float(prob)}
+                prob = model.predict(image_array)[0][0]
+                result = "Nodule" if prob > 0.5 else "Non-nodule"
+                prediction = {"result": result, "probability": float(prob)}
 
-            # Chuyển ảnh sang base64 để hiển thị trên web
-            with open(filepath, "rb") as img_file:
-                image_b64 = base64.b64encode(img_file.read()).decode("utf-8")
+                with open(filepath, "rb") as img_file:
+                    image_b64 = base64.b64encode(img_file.read()).decode("utf-8")
+            except Exception as e:
+                flash(f"Lỗi dự đoán hình ảnh: {e}", "danger")
         else:
             flash("Vui lòng chọn hình ảnh để dự đoán", "warning")
 
@@ -114,22 +121,26 @@ def emr_prediction():
 @app.route("/login", methods=["GET", "POST"])
 def login():
     if request.method == "POST":
-        userID = request.form.get("user_demo")
-        password = request.form.get("Test@123456")
-        # TODO: Replace with real user check
-        if username == "admin" and password == "admin":
-            session["user"] = username
+        userID = request.form.get("userID")
+        password = request.form.get("password")
+
+        # Demo login
+        if userID == "user_demo" and password == "Test@123456":
+            session["user"] = userID
+            flash("Đăng nhập thành công!", "success")
             return redirect(url_for("dashboard"))
-        flash("Sai tên đăng nhập hoặc mật khẩu", "danger")
+        else:
+            flash("Sai tên đăng nhập hoặc mật khẩu", "danger")
+
     return render_template("index.html")
 
 @app.route("/logout")
 def logout():
     session.pop("user", None)
+    flash("Đã đăng xuất thành công.", "info")
     return redirect(url_for("login"))
 
 # --- Main ---
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
-
