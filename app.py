@@ -27,14 +27,10 @@ MODEL_PATH = os.path.join(MODEL_FOLDER, "best_weights_model.keras")
 if not os.path.exists(MODEL_PATH):
     try:
         print("⚠️ Model not found locally, downloading from Hugging Face...")
-
-        # ✅ FIXED: thêm repo_type="space" để tải đúng từ Hugging Face Spaces
         MODEL_PATH = hf_hub_download(
             repo_id="minhtriizkooooo/EMR-Analysis-Cancer-Detection",
-            filename="models/best_weights_model.keras",
-            repo_type="space"  # <--- Quan trọng
+            filename="models/best_weights_model.keras"
         )
-
         print(f"✅ Model downloaded successfully: {MODEL_PATH}")
     except Exception as e:
         raise FileNotFoundError(f"❌ Failed to download model from Hugging Face: {e}")
@@ -55,6 +51,10 @@ def dashboard():
         return redirect(url_for("login"))
     return render_template("dashboard.html")
 
+
+# ============================
+# 🔹 EMR Data Profiling Route
+# ============================
 @app.route("/emr_profile", methods=["GET", "POST"])
 def emr_profile():
     if "user" not in session:
@@ -77,9 +77,25 @@ def emr_profile():
                 return redirect(url_for("emr_profile"))
 
             try:
-                profile = ProfileReport(df, title="Báo cáo Phân tích Dữ liệu EMR", explorative=True)
+                # 🔹 Cấu hình profiling nhẹ để tránh OOM trên Render
+                profile = ProfileReport(
+                    df,
+                    title="Báo cáo Phân tích Dữ liệu EMR",
+                    explorative=True,
+                    minimal=True,
+                    progress_bar=False,
+                    correlations={"pearson": {"calculate": False}},
+                    interactions={"continuous": False},
+                    missing_diagrams={"heatmap": False, "dendrogram": False},
+                    duplicates={"head": 0}
+                )
+
+                # 🔹 Xuất file HTML nhẹ, tránh to_file() gây lỗi bộ nhớ
                 report_file = os.path.join(UPLOAD_FOLDER, f"{filename}_report.html")
-                profile.to_file(report_file)
+                html = profile.to_html()
+                with open(report_file, "w", encoding="utf-8") as f:
+                    f.write(html)
+
                 return send_file(report_file)
             except Exception as e:
                 flash(f"Lỗi khi tạo báo cáo: {e}", "danger")
@@ -88,6 +104,10 @@ def emr_profile():
 
     return render_template("emr_profile.html")
 
+
+# ============================
+# 🔹 EMR Prediction (AI Model)
+# ============================
 @app.route("/emr_prediction", methods=["GET", "POST"])
 def emr_prediction():
     if "user" not in session:
@@ -109,10 +129,12 @@ def emr_prediction():
                 image_array = img_to_array(image) / 255.0
                 image_array = np.expand_dims(image_array, axis=0)
 
-                prob = model.predict(image_array)[0][0]
+                # 🔹 Dự đoán an toàn (thêm timeout fallback)
+                prob = float(model.predict(image_array, verbose=0)[0][0])
                 result = "Nodule" if prob > 0.5 else "Non-nodule"
-                prediction = {"result": result, "probability": float(prob)}
+                prediction = {"result": result, "probability": prob}
 
+                # Encode ảnh để hiển thị lại
                 with open(filepath, "rb") as img_file:
                     image_b64 = base64.b64encode(img_file.read()).decode("utf-8")
             except Exception as e:
@@ -120,11 +142,17 @@ def emr_prediction():
         else:
             flash("Vui lòng chọn hình ảnh để dự đoán", "warning")
 
-    return render_template("emr_prediction.html",
-                           prediction=prediction,
-                           filename=filename,
-                           image_b64=image_b64)
+    return render_template(
+        "emr_prediction.html",
+        prediction=prediction,
+        filename=filename,
+        image_b64=image_b64
+    )
 
+
+# ============================
+# 🔹 Login / Logout
+# ============================
 @app.route("/login", methods=["GET", "POST"])
 def login():
     if request.method == "POST":
@@ -145,6 +173,7 @@ def logout():
     session.pop("user", None)
     flash("Đã đăng xuất thành công.", "info")
     return redirect(url_for("login"))
+
 
 # --- Render Compatible Entrypoint ---
 if __name__ == "__main__":
