@@ -1,7 +1,7 @@
 # --- Core Web ---
-Flask==2.3.3
-Werkzeug==2.3.7
-gunicorn==21.2.0
+Flask==3.0.3
+Werkzeug==3.0.2
+gunicorn==23.0.0
 
 # --- AI / TensorFlow ---
 tensorflow-cpu==2.16.1
@@ -13,10 +13,9 @@ opencv-python-headless==4.10.0.84
 Pillow==10.4.0
 
 # --- Data Profiling ---
-ydata-profiling==4.7.0
+ydata-profiling==4.8.3
 openpyxl==3.1.5
 
 # --- Utility ---
 requests==2.32.3
 huggingface-hub==0.25.1
-
