@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# app.py: EMR AI - FINAL OPTIMIZATION FOR RENDER STABILITY
+# app.py: EMR AI - FINAL LAZY LOADING AND OPTIMIZATION FOR RENDER STABILITY
 import os
 import io
 import base64
@@ -12,12 +12,10 @@ from flask import (
     Flask, flash, redirect, render_template, request, session, url_for
 )
 from werkzeug.utils import secure_filename
-# Sử dụng tải Keras model từ tensorflow.keras
 from tensorflow.keras.models import load_model
 from tensorflow.keras.preprocessing.image import load_img, img_to_array
 from PIL import Image
 from functools import wraps
-# Đảm bảo đã cài đặt ydata-profiling
 from ydata_profiling import ProfileReport
 
 # === LOGGING ===
@@ -32,42 +30,49 @@ MAX_FILE_SIZE_MB = 10
 ALLOWED_IMG_EXT = {'png', 'jpg', 'jpeg', 'bmp'}
 ALLOWED_DATA_EXT = {'csv', 'xls', 'xlsx'}
 
-# === MODEL PATH ===
+# === MODEL CONFIGURATION ===
 MODEL_FOLDER = "models"
 os.makedirs(MODEL_FOLDER, exist_ok=True)
 MODEL_PATH = os.path.join(MODEL_FOLDER, "best_weights_model.keras")
-# URL tải mô hình từ Hugging Face
 HF_MODEL_URL = "https://huggingface.co/spaces/minhtriizkooooo/EMR-Analysis-Cancer-Detection/resolve/main/models/best_weights_model.keras"
 
-# === LOAD MODEL ONCE (Eager Loading) ===
+# Global variable for LAZY LOADING
 model = None
-try:
-    if not os.path.exists(MODEL_PATH):
-        logger.info("Downloading model from HF...")
-        # Tăng timeout tải model lên 5 phút (300 giây) để tránh lỗi 502 khi khởi động
-        r = requests.get(HF_MODEL_URL, stream=True, timeout=300) 
-        r.raise_for_status()
-        with open(MODEL_PATH, "wb") as f:
-            for chunk in r.iter_content(8192):
-                f.write(chunk)
-        logger.info("Model downloaded.")
-    else:
-        logger.info("Model found locally.")
 
-    # Tải model Keras
-    model = load_model(MODEL_PATH)
-    logger.info("✅ REAL KERAS MODEL LOADED SUCCESSFULLY")
-except Exception as e:
-    logger.error(f"❌ Model load failed during startup: {e}")
-    model = None
+def get_model():
+    """
+    Load the Keras model just-in-time (JIT) and cache it.
+    This prevents the application from crashing during startup (Error 502/500).
+    """
+    global model
+    if model is None:
+        logger.info("JIT Model loading started...")
+        try:
+            if not os.path.exists(MODEL_PATH):
+                logger.info("Model not found locally. Downloading from HF...")
+                # Tăng timeout tải model lên 5 phút (300 giây)
+                r = requests.get(HF_MODEL_URL, stream=True, timeout=300) 
+                r.raise_for_status()
+                with open(MODEL_PATH, "wb") as f:
+                    for chunk in r.iter_content(8192):
+                        f.write(chunk)
+                logger.info("Model downloaded successfully.")
+            
+            # Tải model vào bộ nhớ
+            model = load_model(MODEL_PATH)
+            logger.info("✅ Keras Model loaded successfully into memory.")
+        except Exception as e:
+            logger.error(f"❌ JIT Model load failed: {e}")
+            model = None
+            raise RuntimeError("Failed to load AI model.") from e
+            
+    return model
 
-# === UTILS ===
+# === UTILS (Không đổi) ===
 def allowed_file(filename, exts):
-    """Kiểm tra phần mở rộng file có được phép hay không."""
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in exts
 
 def safe_thumbnail(img_bytes, size=200):
-    """Tạo thumbnail an toàn cho ảnh hiển thị trên giao diện."""
     try:
         img = Image.open(io.BytesIO(img_bytes))
         img.thumbnail((size, size), Image.Resampling.LANCZOS)
@@ -79,7 +84,6 @@ def safe_thumbnail(img_bytes, size=200):
         return None
 
 def login_required(f):
-    """Decorator yêu cầu đăng nhập."""
     @wraps(f)
     def wrap(*args, **kwargs):
         if 'user' not in session: return redirect(url_for('login'))
@@ -93,7 +97,6 @@ def home():
 
 @app.route("/login", methods=["GET", "POST"])
 def login():
-    """Xử lý đăng nhập."""
     if request.method == "POST":
         if request.form.get("userID") == "user_demo" and request.form.get("password") == "Test@123456":
             session['user'] = "user_demo"
@@ -104,27 +107,24 @@ def login():
 @app.route("/dashboard")
 @login_required
 def dashboard():
-    """Trang điều khiển."""
-    status = "Model Đã Sẵn Sàng" if model else "Model Chưa Tải Được"
+    # Kiểm tra trạng thái model để hiển thị, không tải model ở đây.
+    status = "Model Đã Sẵn Sàng (Lazy Loaded)" if model else "Model Chưa Tải"
     return render_template("dashboard.html", model_status=status)
 
 @app.route("/logout")
 def logout():
-    """Đăng xuất."""
     session.clear()
     flash("Đã đăng xuất.", "info")
     return redirect(url_for("login"))
 
 @app.route("/health")
 def health():
-    """Route kiểm tra trạng thái dịch vụ (Health Check)."""
     return {"status": "ok", "model_loaded": model is not None}, 200
 
-# === EMR PROFILE: ĐÃ TỐI ƯU PANDAS & YDATA ===
+# === EMR PROFILE: TỐI ƯU PANDAS & YDATA (Vẫn cần Gunicorn Timeout cao) ===
 @app.route("/emr_profile", methods=["GET", "POST"])
 @login_required
 def emr_profile():
-    """Phân tích dữ liệu y tế bằng ProfileReport (Nhanh và nhẹ)."""
     profile_html = None
     filename = None
 
@@ -149,19 +149,17 @@ def emr_profile():
             
             # Đọc dữ liệu với tối ưu hóa
             if filename.lower().endswith('.csv'):
-                # Dùng engine mặc định và tối ưu bộ nhớ
                 df = pd.read_csv(stream, low_memory=False) 
             else:
-                # Dùng engine openpyxl cho Excel
                 df = pd.read_excel(stream, engine='openpyxl') 
 
-            # === TỐI ƯU HÓA CHO RENDER ===
+            # === TỐI ƯU HÓA: Lấy mẫu và minimal=True
             if len(df) > 2000:
                 df_size = len(df)
                 df = df.sample(2000, random_state=42)
                 flash(f"File có {df_size} dòng. Đang phân tích mẫu 2000 dòng để tránh Timeout và Crash.", "warning")
 
-            flash("🕒 Đang tạo báo cáo chuyên sâu (chế độ TỐC ĐỘ CAO). Quá trình này **YÊU CẦU Gunicorn Timeout lớn**.", "info")
+            flash("🕒 Đang tạo báo cáo chuyên sâu. Quá trình này **YÊU CẦU Gunicorn Timeout lớn**.", "info")
             profile = ProfileReport(
                 df,
                 title=f"Phân tích Dữ liệu EMR: {filename}",
@@ -177,18 +175,20 @@ def emr_profile():
 
     return render_template("emr_profile.html", profile_html=profile_html, filename=filename)
 
-# === EMR PREDICTION: SỬ DỤNG MODEL ĐÃ LOAD SẴN ===
+# === EMR PREDICTION: SỬ DỤNG HÀM get_model() ===
 @app.route("/emr_prediction", methods=["GET", "POST"])
 @login_required
 def emr_prediction():
-    """Dự đoán hình ảnh y tế bằng mô hình Keras đã tải sẵn."""
     prediction = None
     filename = None
     image_b64 = None
 
     if request.method == "POST":
-        if model is None:
-            flash("❌ Lỗi dự đoán: Model chưa tải được khi khởi động. Kiểm tra logs.", "danger")
+        # Gọi hàm tải mô hình (Tải lần đầu nếu chưa có)
+        try:
+            current_model = get_model()
+        except RuntimeError as e:
+            flash(f"❌ Lỗi dự đoán: {e}", "danger")
             return render_template("emr_prediction.html")
 
         file = request.files.get("file")
@@ -218,7 +218,8 @@ def emr_prediction():
             arr = img_to_array(img) / 255.0
             arr = np.expand_dims(arr, axis=0)
 
-            prob = float(model.predict(arr, verbose=0)[0][0])
+            # Dự đoán bằng current_model
+            prob = float(current_model.predict(arr, verbose=0)[0][0])
             result = "Nodule (Có khối u)" if prob > 0.5 else "Non-nodule (Không có khối u)"
             prediction = {"result": result, "probability": prob}
 
