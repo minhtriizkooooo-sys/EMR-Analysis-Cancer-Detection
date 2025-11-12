@@ -15,11 +15,18 @@ from PIL import Image
 from functools import wraps
 from pandas.errors import ParserError
 
-# --- Logger ---
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")
+# ==============================================================
+# --- LOGGER CONFIGURATION ---
+# ==============================================================
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+)
 logger = logging.getLogger(__name__)
 
-# --- Flask config ---
+# ==============================================================
+# --- FLASK CONFIGURATION ---
+# ==============================================================
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "default_strong_secret_key_12345")
 
@@ -28,25 +35,28 @@ os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 app.config["UPLOAD_FOLDER"] = UPLOAD_FOLDER
 app.config["ALLOWED_EXTENSIONS"] = {"csv", "xlsx", "xls", "png", "jpg", "jpeg", "gif", "bmp"}
 
-# --- Model config ---
+# ==============================================================
+# --- MODEL CONFIGURATION ---
+# ==============================================================
 MODEL_URL = "https://huggingface.co/spaces/minhtriizkooooo/EMR-Analysis-Cancer-Detection/resolve/main/models/best_weights_model.keras"
 MODEL_PATH = "models/best_weights_model.keras"
 TARGET_SIZE = (240, 240)
 MODEL = None
 
-# --- Ensure model exists or download it ---
+# --- Ensure model exists ---
 os.makedirs("models", exist_ok=True)
 if not os.path.exists(MODEL_PATH):
     try:
         logger.info("⬇️ Downloading Keras model from Hugging Face...")
-        r = requests.get(MODEL_URL)
+        r = requests.get(MODEL_URL, timeout=60)
         r.raise_for_status()
         with open(MODEL_PATH, "wb") as f:
             f.write(r.content)
         logger.info("✅ Model downloaded successfully.")
     except Exception as e:
-        logger.error(f"❌ Failed to download model: {e}")
+        logger.error(f"❌ Failed to download model from Hugging Face: {e}")
 
+# --- Load model ---
 def load_keras_model():
     global MODEL
     if MODEL is None:
@@ -62,7 +72,9 @@ def load_keras_model():
 with app.app_context():
     load_keras_model()
 
-# --- Helpers ---
+# ==============================================================
+# --- HELPER FUNCTIONS ---
+# ==============================================================
 def allowed_file(filename):
     return "." in filename and filename.rsplit(".", 1)[1].lower() in app.config["ALLOWED_EXTENSIONS"]
 
@@ -76,14 +88,19 @@ def login_required(f):
     return decorated_function
 
 def preprocess_image(image_file):
+    """Chuẩn hóa ảnh đầu vào giống với huấn luyện: RGB, 240x240"""
     if not MODEL:
         raise RuntimeError("Model is not loaded.")
     img = load_img(image_file, target_size=TARGET_SIZE, color_mode="rgb")
     arr = img_to_array(img)
     arr = np.expand_dims(arr, axis=0)
+    arr = arr / 255.0  # Chuẩn hóa nếu model yêu cầu
     return arr
 
-# --- Routes ---
+# ==============================================================
+# --- ROUTES ---
+# ==============================================================
+
 @app.route("/")
 def home():
     return redirect(url_for("login"))
@@ -113,7 +130,9 @@ def dashboard():
 def health():
     return jsonify({"status": "ok", "model_loaded": MODEL is not None})
 
-# --- EMR PROFILE ---
+# ==============================================================
+# --- EMR PROFILE ANALYSIS (CSV/XLSX) ---
+# ==============================================================
 @app.route("/emr_profile", methods=["GET", "POST"])
 @login_required
 def emr_profile():
@@ -135,18 +154,21 @@ def emr_profile():
             df = pd.read_csv(data) if ext == "csv" else pd.read_excel(data)
             n_rows, n_cols = df.shape
             summary_html = df.describe(include="all").to_html(classes="table-auto")
-            #flash(f"Phân tích {n_rows} hàng × {n_cols} cột hoàn tất.", "success")
+            flash(f"Phân tích {n_rows} hàng × {n_cols} cột hoàn tất.", "success")
         except Exception as e:
-            logger.error(f"Error reading file: {e}")
+            logger.exception(f"Lỗi đọc file: {e}")
             flash(f"Lỗi đọc dữ liệu: {e}", "danger")
 
     return render_template("emr_profile.html", summary=summary_html)
 
-# --- IMAGE PREDICTION ---
+# ==============================================================
+# --- MEDICAL IMAGE PREDICTION (KERAS MODEL) ---
+# ==============================================================
 @app.route("/emr_prediction", methods=["GET", "POST"])
 @login_required
 def emr_prediction():
     prediction_result, filename, image_b64 = None, None, None
+
     if request.method == "POST":
         uploaded = request.files.get("file")
         if not uploaded or uploaded.filename == "":
@@ -160,22 +182,40 @@ def emr_prediction():
         data = uploaded.read()
         image_b64 = base64.b64encode(data).decode("utf-8")
         image_stream = io.BytesIO(data)
+
+        if MODEL is None:
+            flash("❌ Model chưa được tải lên. Vui lòng chờ hoặc kiểm tra kết nối.", "danger")
+            logger.error("MODEL is None when predicting.")
+            return redirect(request.url)
+
         try:
             processed = preprocess_image(image_stream)
+            logger.info(f"🧠 Predicting image: shape={processed.shape}")
             preds = MODEL.predict(processed)
+            logger.info(f"Raw model output: {preds}")
+
+            # Đảm bảo đầu ra hợp lệ
             p_nodule = float(preds[0][0]) if preds.ndim == 2 else float(preds[0])
             label = "Nodule" if p_nodule >= 0.5 else "Non-nodule"
             prob = p_nodule if p_nodule >= 0.5 else 1 - p_nodule
-            prediction_result = {"result": label, "probability": round(prob, 6), "raw_output": round(p_nodule, 6)}
-            #flash("Dự đoán AI hoàn tất.", "success")
+
+            prediction_result = {
+                "result": label,
+                "probability": round(prob, 6),
+                "raw_output": round(p_nodule, 6)
+            }
+            flash("✅ Dự đoán AI hoàn tất.", "success")
+
         except Exception as e:
-            logger.error(f"Error during prediction: {e}")
-            flash(f"Lỗi xử lý hình ảnh hoặc dự đoán: {e}", "danger")
+            logger.exception(f"Error during prediction: {e}")
+            flash(f"Lỗi khi xử lý hình ảnh hoặc dự đoán: {e}", "danger")
             return redirect(request.url)
 
     return render_template("emr_prediction.html", prediction=prediction_result, filename=filename, image_b64=image_b64)
 
-# --- Run ---
+# ==============================================================
+# --- RUN APP ---
+# ==============================================================
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     logger.info(f"🚀 EMR AI is running on port {port}")
