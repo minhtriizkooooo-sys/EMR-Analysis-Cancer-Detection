@@ -40,7 +40,7 @@ MODEL_FOLDER = "models"
 os.makedirs(MODEL_FOLDER, exist_ok=True)
 MODEL_PATH = os.path.join(MODEL_FOLDER, "best_weights_model.keras")
 # URL tải mô hình từ Hugging Face
-HF_MODEL_URL = "https://huggingface.co/spaces/minhtriizkooooo/EMR-Analysis-Cancer-Detection/resolve/main/models/best_weights_model.keras"
+HF_MODEL_URL = "[https://huggingface.co/spaces/minhtriizkooooo/EMR-Analysis-Cancer-Detection/resolve/main/models/best_weights_model.keras](https://huggingface.co/spaces/minhtriizkooooo/EMR-Analysis-Cancer-Detection/resolve/main/models/best_weights_model.keras)"
 
 # === LOAD MODEL ONCE (Eager Loading) ===
 model = None
@@ -256,12 +256,3 @@ if __name__ == "__main__":
     logger.info(f"EMR AI starting on port {port}")
     # Chạy Flask ở chế độ non-threaded để tương thích tốt hơn với Gunicorn
     app.run(host="0.0.0.0", port=port, debug=False, threaded=False)
-```
-eof
-
-Bạn chỉ cần sao chép toàn bộ nội dung nằm trong khối code trên để thay thế cho file `app.py` hiện tại.
-
-**Quan trọng:** Sau khi cập nhật file, nhớ kiểm tra lại lệnh **Start Command** trên Render. Nó **phải là**:
-
-```bash
-gunicorn app:app --timeout 120
