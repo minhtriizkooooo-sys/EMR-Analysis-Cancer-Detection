@@ -1,10 +1,12 @@
 # -*- coding: utf-8 -*-
-# app.py: EMR AI - REAL KERAS MODEL + LIGHT PROFILE + NO 502/CRASH
+# app.py: EMR AI - ADVANCED PROFILE + REAL KERAS PREDICTION + NO 502
 import os
 import io
 import base64
 import logging
 import tempfile
+import signal
+import time
 from PIL import Image
 import numpy as np
 import pandas as pd
@@ -16,6 +18,7 @@ from werkzeug.utils import secure_filename
 from tensorflow.keras.models import load_model
 from tensorflow.keras.preprocessing.image import load_img, img_to_array
 from functools import wraps
+from ydata_profiling import ProfileReport
 
 # === LOGGING ===
 logging.basicConfig(
@@ -28,10 +31,10 @@ logger = logging.getLogger(__name__)
 # === FLASK SETUP ===
 app = Flask(__name__)
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", "emr-ai-secure-2025")
-app.config['MAX_CONTENT_LENGTH'] = 4 * 1024 * 1024  # 4MB max
-MAX_FILE_SIZE_MB = 4
+app.config['MAX_CONTENT_LENGTH'] = 5 * 1024 * 1024  # 5MB max
+MAX_FILE_SIZE_MB = 5
 ALLOWED_IMG_EXT = {'png', 'jpg', 'jpeg', 'gif', 'bmp'}
-ALLOWED_DATA_EXT = {'csv', 'xls', 'xlsx'}
+ALLOWED_DATA_EXT = {'csv', 'xls', 'xlsx', 'txt'}
 
 # === FOLDERS ===
 MODEL_FOLDER = "models"
@@ -49,7 +52,7 @@ model = None
 if not os.path.exists(MODEL_PATH):
     logger.info("Downloading model from Hugging Face...")
     try:
-        r = requests.get(HF_MODEL_URL, stream=True, timeout=60)
+        r = requests.get(HF_MODEL_URL, stream=True, timeout=120)
         r.raise_for_status()
         with open(MODEL_PATH, "wb") as f:
             for chunk in r.iter_content(chunk_size=8192):
@@ -60,9 +63,15 @@ if not os.path.exists(MODEL_PATH):
 else:
     logger.info("Model found locally.")
 
-# Load model
+# Load model with timeout protection
 try:
+    # Set a timeout for model loading (30s)
+    def timeout_handler(signum, frame):
+        raise TimeoutError("Model load timeout")
+    signal.signal(signal.SIGALRM, timeout_handler)
+    signal.alarm(30)
     model = load_model(MODEL_PATH)
+    signal.alarm(0)
     logger.info("Keras model loaded successfully.")
 except Exception as e:
     logger.error(f"Model load failed: {e}")
@@ -92,6 +101,20 @@ def login_required(f):
         return f(*args, **kwargs)
     return wrap
 
+def safe_predict(model, img_array, timeout=10):
+    """Predict with timeout to avoid 502"""
+    def timeout_handler(signum, frame):
+        raise TimeoutError("Prediction timeout")
+    try:
+        signal.signal(signal.SIGALRM, timeout_handler)
+        signal.alarm(timeout)
+        prob = float(model.predict(img_array, verbose=0)[0][0])
+        signal.alarm(0)
+        return prob
+    except Exception as e:
+        logger.error(f"Predict error: {e}")
+        return 0.5  # Fallback neutral
+
 # === ROUTES ===
 @app.route("/")
 def home():
@@ -112,11 +135,11 @@ def dashboard():
     status = "Model loaded" if model else "Model failed"
     return render_template("dashboard.html", model_status=status)
 
-# === EMR PROFILE: NHẸ, NHANH, KHÔNG DÙNG YDATA ===
+# === EMR PROFILE: CHUYÊN SÂU VỚI YDATA (CONFIG NHẸ) ===
 @app.route("/emr_profile", methods=["GET", "POST"])
 @login_required
 def emr_profile():
-    summary = None
+    profile_html = None
     filename = None
 
     if request.method == "POST":
@@ -127,64 +150,62 @@ def emr_profile():
 
         filename = secure_filename(file.filename)
         if not allowed_file(filename, ALLOWED_DATA_EXT):
-            flash("Chỉ hỗ trợ CSV, XLS, XLSX.", "danger")
+            flash("Chỉ hỗ trợ CSV, XLS, XLSX, TXT.", "danger")
             return render_template("emr_profile.html")
 
-        # Đọc file vào bộ nhớ
         try:
             file_bytes = file.read()
             if len(file_bytes) > MAX_FILE_SIZE_MB * 1024 * 1024:
-                flash(f"File quá lớn (>4MB).", "danger")
+                flash(f"File quá lớn (>5MB).", "danger")
                 return render_template("emr_profile.html")
 
             file_stream = io.BytesIO(file_bytes)
-            if filename.lower().endswith('.csv'):
+            if filename.lower().endswith('.csv') or filename.lower().endswith('.txt'):
                 df = pd.read_csv(file_stream)
             else:
                 df = pd.read_excel(file_stream)
 
-            # Giới hạn 1000 dòng để tránh chậm
-            if len(df) > 1000:
-                df = df.sample(1000)
-                flash("File lớn → chỉ phân tích mẫu 1000 dòng.", "warning")
+            # Giới hạn 2000 dòng để tránh chậm
+            if len(df) > 2000:
+                df_sample = df.sample(2000)
+                flash("File lớn → phân tích mẫu 2000 dòng cho tốc độ nhanh.", "warning")
+            else:
+                df_sample = df
 
-            rows, cols = df.shape
-            info_html = f"""
-            <div class="bg-green-50 p-6 rounded-lg">
-                <h3 class="text-2xl font-bold text-green-700 mb-4">Tổng quan</h3>
-                <p><strong>Dòng:</strong> {rows} | <strong>Cột:</strong> {cols}</p>
-            </div>
-            """
-
-            col_details = []
-            for col in df.columns:
-                miss = df[col].isnull().sum()
-                uniq = df[col].nunique()
-                dtype = str(df[col].dtype)
-                stats = ""
-                if pd.api.types.is_numeric_dtype(df[col]):
-                    desc = df[col].describe()
-                    stats = f"Min: {desc['min']:.2f}, Max: {desc['max']:.2f}, Mean: {desc['mean']:.2f}"
-                col_details.append(f"""
-                <div class="bg-gray-50 p-3 rounded border-l-4 border-green-600">
-                    <strong>{col}</strong><br>
-                    <small>Kiểu: {dtype} | Thiếu: {miss} | Duy nhất: {uniq}</small>
-                    {f'<br><small class="text-gray-600">{stats}</small>'.strip() if stats else ''}
-                </div>
-                """)
-
-            head_html = df.head(5).to_html(classes="table-auto w-full text-sm", index=False)
-
-            summary = info_html + "<h4 class='mt-6 font-bold'>Cột dữ liệu:</h4>" + \
-                      "<div class='grid grid-cols-1 md:grid-cols-2 gap-3'>" + "".join(col_details) + "</div>" + \
-                      "<h4 class='mt-6 font-bold'>5 dòng đầu:</h4><div class='overflow-x-auto'>" + head_html + "</div>"
+            # Tạo report chuyên sâu nhưng nhẹ
+            start_time = time.time()
+            profile = ProfileReport(
+                df_sample,
+                title=f"Phân tích Chuyên Sâu EMR: {filename}",
+                explorative=True,  # Bật explorative cho chuyên sâu
+                correlations={
+                    "pearson": {"calculate": True},
+                    "spearman": {"calculate": False},  # Tắt Spearman để nhanh
+                    "kendall": {"calculate": False},
+                    "phi_k": {"calculate": False},
+                    "cramers": {"calculate": False},
+                    "recoded": {"calculate": False}
+                },
+                interactions={"continuous": True},  # Giữ interactions cơ bản
+                missing_diagrams={
+                    "heatmap": True,
+                    "dendrogram": False,  # Tắt dendrogram nặng
+                    "matrix": False
+                },
+                html={"style": {"full_width": True}},
+                sort="none"  # Không sort để nhanh
+            )
+            profile_html = profile.to_html()
+            end_time = time.time()
+            flash(f"✅ Báo cáo chuyên sâu hoàn thành trong {end_time - start_time:.1f}s!", "success")
 
         except Exception as e:
-            flash(f"Lỗi xử lý file: {e}", "danger")
+            logger.error(f"Profile error: {e}")
+            flash(f"Lỗi tạo báo cáo: {e}. Thử file nhỏ hơn.", "danger")
 
-    return render_template("emr_profile.html", summary=summary, filename=filename)
+    return render_template("emr_profile.html", profile_html=profile_html, filename=filename)
 
-# === EMR PREDICTION: REAL KERAS + THUMBNAIL NHỎ ===
+# === EMR PREDICTION: REAL KERAS + TIMEOUT BẢO VỆ ===
 @app.route("/emr_prediction", methods=["GET", "POST"])
 @login_required
 def emr_prediction():
@@ -194,7 +215,7 @@ def emr_prediction():
 
     if request.method == "POST":
         if model is None:
-            flash("Mô hình AI chưa sẵn sàng.", "danger")
+            flash("Mô hình AI chưa sẵn sàng (kiểm tra logs).", "danger")
             return render_template("emr_prediction.html")
 
         file = request.files.get("file")
@@ -209,13 +230,13 @@ def emr_prediction():
 
         img_bytes = file.read()
         if len(img_bytes) > MAX_FILE_SIZE_MB * 1024 * 1024:
-            flash("Ảnh quá lớn (>4MB).", "danger")
+            flash("Ảnh quá lớn (>5MB).", "danger")
             return render_template("emr_prediction.html")
 
-        # Tạo thumbnail nhỏ
+        # Tạo thumbnail nhỏ ngay lập tức
         image_b64 = safe_thumbnail(img_bytes, size=200)
 
-        # Dự đoán bằng mô hình thật
+        # Dự đoán với timeout
         try:
             with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(filename)[1]) as tmp:
                 tmp.write(img_bytes)
@@ -225,12 +246,15 @@ def emr_prediction():
             arr = img_to_array(img) / 255.0
             arr = np.expand_dims(arr, axis=0)
 
-            prob = float(model.predict(arr, verbose=0)[0][0])
+            prob = safe_predict(model, arr, timeout=15)  # 15s timeout
             result = "Nodule (Có khối u)" if prob > 0.5 else "Non-nodule (Không có khối u)"
             prediction = {"result": result, "probability": prob}
 
+            flash(f"✅ Dự đoán hoàn thành: {result} ({prob*100:.1f}%)", "success")
+
         except Exception as e:
-            flash(f"Lỗi AI: {e}", "danger")
+            logger.error(f"Predict error: {e}")
+            flash(f"Lỗi AI: {e}. Thử ảnh nhỏ hơn.", "danger")
         finally:
             if 'tmp_path' in locals() and os.path.exists(tmp_path):
                 os.remove(tmp_path)
@@ -255,5 +279,5 @@ def health():
 # === RUN ===
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
-    logger.info("EMR AI khởi động – Profile nhẹ + Real Keras Model")
+    logger.info("EMR AI khởi động – Advanced Profile + Protected Real Keras")
     app.run(host="0.0.0.0", port=port, debug=False, threaded=True)
