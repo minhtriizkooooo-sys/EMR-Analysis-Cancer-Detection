@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 app.py — EMR AI LITE
-→ Phân tích dữ liệu EMR (CSV) bằng pandas
+→ Phân tích dữ liệu EMR (CSV) bằng pandas (nâng cao)
 → Dự đoán hình ảnh y tế bằng mô hình Keras lưu trên HuggingFace
 → Lazy loading model để tránh lỗi 502 / timeout
 """
@@ -98,6 +98,7 @@ def login_required(f):
         return f(*args, **kwargs)
     return wrap
 
+
 # --------------------------------------------------------
 # ROUTES
 # --------------------------------------------------------
@@ -139,7 +140,7 @@ def health():
 
 
 # --------------------------------------------------------
-# 1️⃣ EMR FILE ANALYSIS (PANDAS)
+# 1️⃣ EMR FILE ANALYSIS (PANDAS - CHUYÊN SÂU)
 # --------------------------------------------------------
 @app.route("/emr_profile", methods=["GET", "POST"])
 @login_required
@@ -170,35 +171,60 @@ def emr_profile():
             else:
                 df = pd.read_excel(stream, engine="openpyxl")
 
-            # Giới hạn dữ liệu lớn
+            # Giới hạn dữ liệu quá lớn
             if len(df) > 5000:
                 df_size = len(df)
                 df = df.sample(2000, random_state=42)
-                flash(
-                    f"File có {df_size} dòng. Phân tích mẫu 2000 dòng để tránh timeout.",
-                    "warning",
+                flash(f"File có {df_size} dòng, phân tích mẫu 2000 dòng.", "warning")
+
+            # --- Phân tích chuyên sâu ---
+            n_rows, n_cols = df.shape
+            missing_ratio = df.isnull().mean().mean()
+
+            # Kiểu dữ liệu
+            dtype_counts = df.dtypes.value_counts().to_frame("Số lượng").to_html(classes="table-auto")
+
+            # Cột số - Thống kê
+            numeric_df = df.select_dtypes(include=[np.number])
+            numeric_summary = numeric_df.describe().T
+            numeric_summary["missing_%"] = df[numeric_df.columns].isnull().mean() * 100
+            numeric_html = numeric_summary.to_html(classes="table-auto", float_format="%.2f")
+
+            # Cột phân loại - Top giá trị
+            categorical_df = df.select_dtypes(exclude=[np.number])
+            cat_summary = []
+            for col in categorical_df.columns:
+                top_vals = categorical_df[col].value_counts().head(5)
+                cat_summary.append(
+                    f"<b>{col}</b>: {len(categorical_df[col].unique())} giá trị duy nhất<br>{top_vals.to_frame().to_html(classes='table-auto', border=0)}"
                 )
+            cat_html = "<hr>".join(cat_summary) if cat_summary else "<p>Không có cột phân loại.</p>"
 
-            # Tạo phân tích cơ bản bằng pandas
-            summary = {
-                "shape": df.shape,
-                "columns": list(df.columns),
-                "describe": df.describe(include="all").to_html(classes="table-auto", border=0),
-                "missing": df.isnull().sum().to_frame("Số ô trống").to_html(classes="table-auto", border=0)
-            }
+            # Cột có nhiều giá trị thiếu
+            missing_table = df.isnull().sum()
+            missing_table = missing_table[missing_table > 0].sort_values(ascending=False)
+            missing_html = (
+                missing_table.to_frame("Số ô trống").to_html(classes="table-auto")
+                if not missing_table.empty
+                else "<p>Không có dữ liệu bị thiếu.</p>"
+            )
 
+            # --- Tổng hợp ra HTML ---
             summary_html = f"""
-            <div class="space-y-8">
+            <div class="space-y-6">
                 <h3 class='text-2xl font-semibold text-primary-green'>Tổng quan dữ liệu</h3>
-                <p><strong>Kích thước:</strong> {summary['shape'][0]} hàng × {summary['shape'][1]} cột</p>
-                <p><strong>Các cột:</strong> {', '.join(summary['columns'])}</p>
-                <h4 class='text-xl font-bold mt-4'>Thống kê mô tả</h4>
-                {summary['describe']}
-                <h4 class='text-xl font-bold mt-4'>Số ô trống theo cột</h4>
-                {summary['missing']}
+                <p><strong>Kích thước:</strong> {n_rows} hàng × {n_cols} cột</p>
+                <p><strong>Tỷ lệ ô trống trung bình:</strong> {missing_ratio*100:.2f}%</p>
+                <h4 class='text-xl font-bold mt-4'>Phân bố kiểu dữ liệu</h4>
+                {dtype_counts}
+                <h4 class='text-xl font-bold mt-4'>Thống kê dữ liệu số</h4>
+                {numeric_html}
+                <h4 class='text-xl font-bold mt-4'>Cột có nhiều ô trống</h4>
+                {missing_html}
+                <h4 class='text-xl font-bold mt-4'>Phân tích dữ liệu phân loại</h4>
+                {cat_html}
             </div>
             """
-            #flash("✅ Phân tích dữ liệu hoàn thành!", "success")
 
         except Exception as e:
             logger.error(f"Error in data analysis: {e}")
@@ -274,4 +300,3 @@ if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     logger.info(f"🚀 EMR AI is running on port {port}")
     app.run(host="0.0.0.0", port=port, debug=False, threaded=False)
-
