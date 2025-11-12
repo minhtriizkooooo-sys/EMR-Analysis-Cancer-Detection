@@ -40,7 +40,8 @@ MODEL_FOLDER = "models"
 os.makedirs(MODEL_FOLDER, exist_ok=True)
 MODEL_PATH = os.path.join(MODEL_FOLDER, "best_weights_model.keras")
 # URL tải mô hình từ Hugging Face
-HF_MODEL_URL = "[https://huggingface.co/spaces/minhtriizkooooo/EMR-Analysis-Cancer-Detection/resolve/main/models/best_weights_model.keras](https://huggingface.co/spaces/minhtriizkooooo/EMR-Analysis-Cancer-Detection/resolve/main/models/best_weights_model.keras)"
+# Đã sửa lỗi: Loại bỏ ký tự Markdown khỏi URL
+HF_MODEL_URL = "https://huggingface.co/spaces/minhtriizkooooo/EMR-Analysis-Cancer-Detection/resolve/main/models/best_weights_model.keras"
 
 # === LOAD MODEL ONCE (Eager Loading) ===
 model = None
