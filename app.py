@@ -5,15 +5,20 @@ import tempfile
 import numpy as np
 import pandas as pd
 import requests
+import time
 from flask import Flask, render_template, request, redirect, url_for, session, flash, send_file
 from werkzeug.utils import secure_filename
 from tensorflow.keras.models import load_model
 from tensorflow.keras.preprocessing.image import load_img, img_to_array
 from ydata_profiling import ProfileReport
+from functools import wraps
+
+# --- Cấu hình Timeout Tối Đa (Tham khảo) ---
+# Dùng để ước tính thời gian chạy tối đa cho tác vụ nặng trong Flask
+MAX_PROFILE_TIME = 100 # Giây (nên nhỏ hơn timeout của Gunicorn, ví dụ: 120s)
 
 # --- Flask Setup ---
 app = Flask(__name__)
-# Đã giữ nguyên key mặc định như trong code gốc
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", "supersecretkey")
 
 # --- Upload Folder Setup ---
@@ -29,7 +34,8 @@ HF_SPACE_MODEL_URL = (
     "https://huggingface.co/spaces/minhtriizkooooo/EMR-Analysis-Cancer-Detection/resolve/main/models/best_weights_model.keras"
 )
 
-# --- Model Loading ---
+# --- Model Loading (EAGER LOADING - KHẮC PHỤC LỖI 502 TIỀM ẨN) ---
+# Tải mô hình một lần khi ứng dụng/worker khởi động
 if not os.path.exists(MODEL_PATH):
     try:
         print("⚠️ Model not found locally, downloading from Hugging Face Space...")
@@ -41,16 +47,32 @@ if not os.path.exists(MODEL_PATH):
         print(f"✅ Model downloaded successfully: {MODEL_PATH}")
     except Exception as e:
         # Giữ nguyên logic lỗi nặng
-        raise FileNotFoundError(f"❌ Failed to download model from Hugging Face Space: {e}")
+        print(f"❌ Failed to download model from Hugging Face Space: {e}")
+        model = None
+        # Không raise FileNotFoundError để ứng dụng vẫn có thể chạy các route khác
+else:
+    print(f"✅ Model found locally: {MODEL_PATH}")
+
 
 # Load model
 try:
     model = load_model(MODEL_PATH)
     print("✅ Model loaded successfully.")
 except Exception as e:
-    # Giữ nguyên logic lỗi nặng
-    raise RuntimeError(f"❌ Failed to load model: {e}")
+    print(f"❌ Failed to load model: {e}")
+    model = None # Đặt model là None nếu tải thất bại
 
+
+# --- Decorators & Utility ---
+
+# Decorator kiểm tra đăng nhập (bạn đã sử dụng 'user' trong session)
+def login_required(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if 'user' not in session:
+            return redirect(url_for('login'))
+        return f(*args, **kwargs)
+    return decorated_function
 
 # --- Routes ---
 @app.route("/")
@@ -58,19 +80,19 @@ def home():
     return redirect(url_for("login"))
 
 @app.route("/dashboard")
+@login_required # Đã thêm decorator để đảm bảo người dùng đã đăng nhập
 def dashboard():
-    if "user" not in session:
-        return redirect(url_for("login"))
-    # Truyền cổng vào template để hiển thị trạng thái
     server_port = os.environ.get("PORT", 5000)
     return render_template("dashboard.html", server_port=server_port)
 
 @app.route("/emr_profile", methods=["GET", "POST"])
+@login_required # Đã thêm decorator
 def emr_profile():
-    if "user" not in session:
-        return redirect(url_for("login"))
-    
-    # Khởi tạo profile_html
+    """
+    Tạo Profile Report và hiển thị. 
+    LƯU Ý: Đây là đoạn code gây ra lỗi WORKER TIMEOUT.
+    Giải pháp bắt buộc là TĂNG TIMEOUT GUNICORN.
+    """
     profile_html = None
     filename = None
     
@@ -79,75 +101,101 @@ def emr_profile():
         if file and file.filename:
             filename = secure_filename(file.filename)
             filepath = os.path.join(UPLOAD_FOLDER, filename)
-            file.save(filepath)
-
+            
+            # Sử dụng tempfile để tránh vấn đề quyền truy cập hoặc xóa file dễ hơn
+            with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(filename)[1]) as temp_file:
+                file.save(temp_file.name)
+                filepath = temp_file.name
+            
             try:
-                if filename.endswith(".csv"):
+                if filename.lower().endswith((".csv", ".txt")):
                     df = pd.read_csv(filepath)
-                else:
-                    # Hỗ trợ Excel (.xls, .xlsx)
+                elif filename.lower().endswith((".xls", ".xlsx")):
                     df = pd.read_excel(filepath)
+                else:
+                    flash("Lỗi: Chỉ hỗ trợ file CSV, Excel (.xls, .xlsx).", "danger")
+                    return redirect(url_for("emr_profile"))
+                
             except Exception as e:
                 flash(f"Lỗi đọc file: {e}", "danger")
                 return redirect(url_for("emr_profile"))
 
             try:
-                # Dùng to_html() thay vì to_file() để hiển thị trực tiếp trong trang
+                # Cảnh báo người dùng về quá trình chờ
+                flash(f"🕒 Đang tạo báo cáo phân tích cho '{filename}'. Quá trình này có thể mất đến 2 phút. Vui lòng chờ...", "info")
+                
+                # Bắt đầu tính giờ cho tác vụ nặng
+                start_time = time.time() 
+                
+                # Tác vụ nặng
                 profile = ProfileReport(df, title=f"Báo cáo Phân tích Dữ liệu: {filename}", explorative=True)
                 profile_html = profile.to_html()
                 
-                flash(f"✅ Đã tạo báo cáo phân tích dữ liệu EMR cho file '{filename}' thành công!", "success")
-                # Xóa file dữ liệu sau khi xử lý (tùy chọn)
-                # os.remove(filepath)
+                end_time = time.time()
+                
+                flash(f"✅ Đã tạo báo cáo thành công trong {end_time - start_time:.2f} giây!", "success")
 
             except Exception as e:
-                flash(f"❌ Lỗi khi tạo báo cáo: {e}", "danger")
+                # Bắt lỗi nếu quá trình tạo report bị gián đoạn (ví dụ: do timeout quá sớm)
+                flash(f"❌ Lỗi khi tạo báo cáo: Quá trình bị ngắt do vượt quá giới hạn thời gian xử lý. Vui lòng thử lại với tập dữ liệu nhỏ hơn, hoặc kiểm tra lại cấu hình Gunicorn timeout. Chi tiết: {e}", "danger")
+            finally:
+                # Dọn dẹp file tạm thời
+                os.remove(filepath)
+
         else:
             flash("⚠️ Vui lòng chọn file CSV hoặc Excel", "warning")
 
     return render_template("emr_profile.html", 
-                           profile_html=profile_html, # Đã sửa: summary -> profile_html
+                           profile_html=profile_html, 
                            filename=filename)
 
 @app.route("/emr_prediction", methods=["GET", "POST"])
+@login_required # Đã thêm decorator
 def emr_prediction():
-    if "user" not in session:
-        return redirect(url_for("login"))
-    
+    """
+    Xử lý dự đoán ảnh.
+    Đã khắc phục lỗi 502 do tải model lặp lại (model được tải sẵn).
+    """
     prediction = None
     filename = None
     image_b64 = None
 
     if request.method == "POST":
+        if model is None:
+            flash("❌ Lỗi dự đoán: Mô hình AI chưa được tải thành công khi khởi động dịch vụ.", "danger")
+            return redirect(url_for("emr_prediction"))
+            
         file = request.files.get("file")
         if file and file.filename:
             filename = secure_filename(file.filename)
-            filepath = os.path.join(UPLOAD_FOLDER, filename)
-            file.save(filepath)
+            
+            # Lưu file vào thư mục tạm thời
+            with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(filename)[1]) as temp_file:
+                file.save(temp_file.name)
+                filepath = temp_file.name
 
             try:
-                # Resize ảnh về kích thước mô hình mong muốn
+                # Resize ảnh về kích thước mô hình mong muốn (240, 240)
                 image = load_img(filepath, target_size=(240, 240))
                 image_array = img_to_array(image) / 255.0
                 image_array = np.expand_dims(image_array, axis=0)
 
-                # Thực hiện dự đoán
+                # Thực hiện dự đoán trên model đã load sẵn
                 prob = model.predict(image_array)[0][0]
-                # Quyết định kết quả (có thể điều chỉnh ngưỡng 0.5)
-                result = "Nodule" if prob > 0.5 else "Non-nodule"
+                
+                # Quyết định kết quả
+                result = "Nodule (Có khối u)" if prob > 0.5 else "Non-nodule (Không có khối u)"
                 prediction = {"result": result, "probability": float(prob)}
 
                 # Đọc ảnh gốc về base64 để hiển thị
                 with open(filepath, "rb") as img_file:
                     image_b64 = base64.b64encode(img_file.read()).decode("utf-8")
                 
-                #flash(f"✅ Dự đoán hoàn tất. Kết quả: {result} ({prob*100:.2f}%)", "success")
-
             except Exception as e:
-                flash(f"❌ Lỗi dự đoán hình ảnh. Đảm bảo đây là file hình ảnh hợp lệ. Chi tiết lỗi: {e}", "danger")
-            
-            # Xóa file ảnh sau khi xử lý (tùy chọn)
-            # os.remove(filepath)
+                flash(f"❌ Lỗi dự đoán hình ảnh. Chi tiết lỗi: {e}", "danger")
+            finally:
+                # Dọn dẹp file tạm thời
+                os.remove(filepath)
 
         else:
             flash("⚠️ Vui lòng chọn hình ảnh để dự đoán", "warning")
@@ -166,7 +214,6 @@ def login():
         # Demo login
         if userID == "user_demo" and password == "Test@123456":
             session["user"] = userID
-            #flash("Chào mừng, Đăng nhập thành công!", "success")
             return redirect(url_for("dashboard"))
         else:
             flash("Sai tên đăng nhập hoặc mật khẩu", "danger")
@@ -181,4 +228,5 @@ def logout():
 
 # --- Render Compatible Entrypoint ---
 if __name__ == "__main__":
+    # Sử dụng biến môi trường PORT cho Render
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
