@@ -11,11 +11,13 @@ from tensorflow.keras.preprocessing.image import load_img, img_to_array
 from ydata_profiling import ProfileReport
 from huggingface_hub import hf_hub_download
 
-
-
 # --- Flask Setup ---
 app = Flask(__name__)
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", "supersecretkey")
+
+# --- Upload Folder Setup ---
+UPLOAD_FOLDER = "uploads"
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
 MODEL_FOLDER = "models"
 os.makedirs(MODEL_FOLDER, exist_ok=True)
@@ -27,7 +29,7 @@ if not os.path.exists(MODEL_PATH):
         print("⚠️ Model not found locally, downloading from Hugging Face...")
         MODEL_PATH = hf_hub_download(
             repo_id="minhtriizkooooo/EMR-Analysis-Cancer-Detection",
-            filename="models/best_weights_model.keras"  # Giữ nguyên đường dẫn gốc
+            filename="models/best_weights_model.keras"
         )
         print(f"✅ Model downloaded successfully: {MODEL_PATH}")
     except Exception as e:
@@ -70,10 +72,13 @@ def emr_profile():
                 flash(f"Lỗi đọc file: {e}", "danger")
                 return redirect(url_for("emr_profile"))
 
-            profile = ProfileReport(df, title="Báo cáo Phân tích Dữ liệu EMR", explorative=True)
-            report_file = os.path.join(UPLOAD_FOLDER, f"{filename}_report.html")
-            profile.to_file(report_file)
-            return send_file(report_file)
+            try:
+                profile = ProfileReport(df, title="Báo cáo Phân tích Dữ liệu EMR", explorative=True)
+                report_file = os.path.join(UPLOAD_FOLDER, f"{filename}_report.html")
+                profile.to_file(report_file)
+                return send_file(report_file)
+            except Exception as e:
+                flash(f"Lỗi khi tạo báo cáo: {e}", "danger")
         else:
             flash("Vui lòng chọn file CSV hoặc Excel", "warning")
 
@@ -125,7 +130,6 @@ def login():
         # Demo login
         if userID == "user_demo" and password == "Test@123456":
             session["user"] = userID
-            #flash("Đăng nhập thành công!", "success")
             return redirect(url_for("dashboard"))
         else:
             flash("Sai tên đăng nhập hoặc mật khẩu", "danger")
@@ -138,8 +142,6 @@ def logout():
     flash("Đã đăng xuất thành công.", "info")
     return redirect(url_for("login"))
 
-# --- Main ---
+# --- Render Compatible Entrypoint ---
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
-
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
