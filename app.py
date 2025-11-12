@@ -27,7 +27,8 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 # Đảm bảo secret key được đặt
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", "emr-secure-2025")
-app.config['MAX_CONTENT_LENGTH'] = 10 * 1024 * 1024  # Tăng lên 10MB cho file data
+# Tăng giới hạn nội dung để cho phép tải file data/ảnh lớn hơn
+app.config['MAX_CONTENT_LENGTH'] = 10 * 1024 * 1024  # 10MB
 MAX_FILE_SIZE_MB = 10
 ALLOWED_IMG_EXT = {'png', 'jpg', 'jpeg', 'bmp'}
 ALLOWED_DATA_EXT = {'csv', 'xls', 'xlsx'}
@@ -43,7 +44,8 @@ model = None
 try:
     if not os.path.exists(MODEL_PATH):
         logger.info("Downloading model from HF...")
-        r = requests.get(HF_MODEL_URL, stream=True, timeout=180) # Tăng timeout cho download
+        # Tăng timeout cho quá trình tải model, phòng trường hợp mạng chậm
+        r = requests.get(HF_MODEL_URL, stream=True, timeout=180) 
         r.raise_for_status()
         with open(MODEL_PATH, "wb") as f:
             for chunk in r.iter_content(8192):
@@ -52,19 +54,20 @@ try:
     else:
         logger.info("Model found locally.")
 
+    # Tải model Keras
     model = load_model(MODEL_PATH)
     logger.info("✅ REAL KERAS MODEL LOADED SUCCESSFULLY")
 except Exception as e:
     logger.error(f"❌ Model load failed during startup: {e}")
-    # Đặt model là None nếu tải thất bại, các route dự đoán sẽ kiểm tra biến này
     model = None
 
 # === UTILS ===
 def allowed_file(filename, exts):
+    """Kiểm tra phần mở rộng file có được phép hay không."""
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in exts
 
 def safe_thumbnail(img_bytes, size=200):
-    """Tạo thumbnail an toàn cho ảnh hiển thị"""
+    """Tạo thumbnail an toàn cho ảnh hiển thị trên giao diện."""
     try:
         img = Image.open(io.BytesIO(img_bytes))
         img.thumbnail((size, size), Image.Resampling.LANCZOS)
@@ -76,6 +79,7 @@ def safe_thumbnail(img_bytes, size=200):
         return None
 
 def login_required(f):
+    """Decorator yêu cầu đăng nhập."""
     @wraps(f)
     def wrap(*args, **kwargs):
         if 'user' not in session: return redirect(url_for('login'))
@@ -88,6 +92,7 @@ def home(): return redirect(url_for("login"))
 
 @app.route("/login", methods=["GET", "POST"])
 def login():
+    """Xử lý đăng nhập."""
     if request.method == "POST":
         if request.form.get("userID") == "user_demo" and request.form.get("password") == "Test@123456":
             session['user'] = "user_demo"
@@ -98,24 +103,27 @@ def login():
 @app.route("/dashboard")
 @login_required
 def dashboard():
+    """Trang điều khiển."""
     status = "Model Đã Sẵn Sàng" if model else "Model Chưa Tải Được"
     return render_template("dashboard.html", model_status=status)
 
 @app.route("/logout")
 def logout():
+    """Đăng xuất."""
     session.clear()
     flash("Đã đăng xuất.", "info")
     return redirect(url_for("login"))
 
 @app.route("/health")
 def health():
-    """Route đơn giản để Render/Gunicorn kiểm tra trạng thái ứng dụng"""
+    """Route kiểm tra trạng thái dịch vụ (Health Check)."""
     return {"status": "ok", "model_loaded": model is not None}, 200
 
 # === EMR PROFILE: SỬA LỖI LOGIC VÀ TỐI ƯU HÓA TỐC ĐỘ ===
 @app.route("/emr_profile", methods=["GET", "POST"])
 @login_required
 def emr_profile():
+    """Phân tích dữ liệu y tế bằng ProfileReport (Nhanh và nhẹ)."""
     profile_html = None
     filename = None
 
@@ -131,7 +139,7 @@ def emr_profile():
             return render_template("emr_profile.html")
 
         try:
-            # Đọc bytes từ file (tránh lưu file lớn)
+            # Đọc bytes từ file và kiểm tra kích thước
             file_bytes = file.read()
             if len(file_bytes) > MAX_FILE_SIZE_MB * 1024 * 1024:
                 flash(f"File quá lớn (> {MAX_FILE_SIZE_MB}MB).", "danger")
@@ -145,18 +153,18 @@ def emr_profile():
                 df = pd.read_excel(stream)
 
             # === TỐI ƯU HÓA: PROFILE NHANH VÀ NHẸ ===
-            # Nếu DataFrame lớn hơn 2000 hàng, chỉ lấy mẫu để tránh crash worker do OOM/Timeout
+            # Giới hạn số dòng để tránh lỗi OOM và Timeout trên Render Free Tier
             if len(df) > 2000:
                 df_size = len(df)
                 df = df.sample(2000, random_state=42)
-                flash(f"File có {df_size} dòng. Đang phân tích mẫu 2000 dòng để tránh Timeout.", "warning")
+                flash(f"File có {df_size} dòng. Đang phân tích mẫu 2000 dòng để tránh Timeout và Crash.", "warning")
 
-            # Sử dụng minimal=True để đạt tốc độ nhanh nhất (Fast and Light)
+            # Sử dụng minimal=True để đạt tốc độ nhanh nhất và tránh lỗi logic phức tạp
             flash("🕒 Đang tạo báo cáo chuyên sâu (chế độ TỐC ĐỘ CAO). Quá trình này có thể mất đến 1-2 phút tùy kích thước file.", "info")
             profile = ProfileReport(
                 df,
                 title=f"Phân tích Dữ liệu EMR: {filename}",
-                minimal=True,  # CHẾ ĐỘ NHANH NHẤT: KHẮC PHỤC LỖI LOGIC VÀ TĂNG TỐC
+                minimal=True,  # CHẾ ĐỘ NHANH VÀ ỔN ĐỊNH NHẤT
                 html={"style": {"full_width": True}}
             )
             profile_html = profile.to_html()
@@ -164,7 +172,6 @@ def emr_profile():
 
         except Exception as e:
             logger.error(f"Profile error: {e}")
-            # Thông báo lỗi chung, khuyến khích dùng file nhỏ hơn
             flash(f"❌ Lỗi xử lý dữ liệu: {str(e)}. Vui lòng kiểm tra định dạng file (header, encoding) hoặc dùng file nhỏ hơn.", "danger")
 
     return render_template("emr_profile.html", profile_html=profile_html, filename=filename)
@@ -173,6 +180,7 @@ def emr_profile():
 @app.route("/emr_prediction", methods=["GET", "POST"])
 @login_required
 def emr_prediction():
+    """Dự đoán hình ảnh y tế bằng mô hình Keras đã tải sẵn."""
     prediction = None
     filename = None
     image_b64 = None
@@ -198,13 +206,12 @@ def emr_prediction():
             flash(f"Ảnh >{MAX_FILE_SIZE_MB}MB.", "danger")
             return render_template("emr_prediction.html")
 
-        # Thumbnail
+        # Tạo thumbnail để hiển thị
         image_b64 = safe_thumbnail(img_bytes)
 
-        # Predict REAL MODEL
         tmp_path = None
         try:
-            # Sử dụng file tạm thời để Keras/PIL có thể đọc file
+            # Lưu vào file tạm thời (cần thiết cho load_img của Keras/PIL)
             with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(filename)[1]) as tmp:
                 tmp.write(img_bytes)
                 tmp_path = tmp.name
@@ -213,7 +220,7 @@ def emr_prediction():
             arr = img_to_array(img) / 255.0
             arr = np.expand_dims(arr, axis=0)
 
-            # DỰ ĐOÁN THẬT – CỰC NHANH
+            # Dự đoán
             prob = float(model.predict(arr, verbose=0)[0][0])
             result = "Nodule (Có khối u)" if prob > 0.5 else "Non-nodule (Không có khối u)"
             prediction = {"result": result, "probability": prob}
@@ -239,15 +246,16 @@ def emr_prediction():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     logger.info(f"EMR AI starting on port {port}")
-    app.run(host="0.0.0.0", port=port, debug=False, threaded=False) # Tắt threaded cho Render/Gunicorn
+    # Chạy Flask ở chế độ non-threaded để tương thích tốt hơn với Gunicorn
+    app.run(host="0.0.0.0", port=port, debug=False, threaded=False)
 ```
 eof
 
-### ⚠️ BƯỚC CUỐI CÙNG ĐỂ KHẮC PHỤC LỖI 502
+Bạn hãy sao chép toàn bộ mã nguồn trên và thay thế nội dung file `app.py` trong dự án của mình.
 
-Bạn **phải** đảm bảo rằng dịch vụ Render của bạn có đủ thời gian để xử lý tác vụ tạo báo cáo (tối đa 2 phút).
+**Lưu ý quan trọng cuối cùng:**
 
-Hãy kiểm tra lại **Start Command** trong Render Settings và đặt nó như sau:
+Sau khi cập nhật file `app.py`, bạn **bắt buộc** phải kiểm tra lại lệnh **Start Command** trên Render và đặt nó thành:
 
 ```bash
 gunicorn app:app --timeout 120
