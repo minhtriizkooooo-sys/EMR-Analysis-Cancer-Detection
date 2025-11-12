@@ -1,10 +1,3 @@
-# -*- coding: utf-8 -*-
-"""
-app.py — EMR AI LITE
-→ Phân tích dữ liệu EMR (CSV) bằng pandas (nâng cao)
-→ Dự đoán hình ảnh y tế bằng mô hình Keras lưu trên HuggingFace
-→ Lazy loading model để tránh lỗi 502 / timeout
-"""
 import os
 import io
 import secrets
@@ -22,68 +15,68 @@ from tensorflow.keras.models import load_model
 from tensorflow.keras.preprocessing.image import load_img, img_to_array
 from PIL import Image
 from functools import wraps
+from pandas.errors import ParserError # Import cụ thể lỗi ParserError
 
-# ==========================================================
-# 🧠 SAFE TENSORFLOW CONFIG
-# ==========================================================
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
-try:
-    # Disable GPU visibility for CPU usage (good practice on resource-limited environment)
-    tf.config.set_visible_devices([], 'GPU')
-    K.clear_session()
-except Exception:
-    pass
 
-logging.basicConfig(level=logging.INFO)
+ --- Logger ---
+logging.basicConfig(level=logging.INFO, format='%(asctime)s INFO:%(levelname)s:%(name)s:%(message)s')
 logger = logging.getLogger(__name__)
 
-# ==========================================================
-# 🔧 FLASK CONFIG
-# ==========================================================
+# --- Flask config ---
 app = Flask(__name__)
-# Thay secrets.token_hex(16) bằng biến môi trường hoặc giá trị cố định an toàn
-app.config['SECRET_KEY'] = os.environ.get('FLASK_SECRET_KEY', secrets.token_hex(16))
-app.config['UPLOAD_FOLDER'] = 'static/uploads'
-app.config['ALLOWED_IMAGE_EXTENSIONS'] = {'png', 'jpg', 'jpeg', 'gif', 'bmp'}
-app.config['ALLOWED_EMR_EXTENSIONS'] = {'csv', 'xls', 'xlsx'}
-app.config['ALLOWED_EXTENSIONS'] = app.config['ALLOWED_IMAGE_EXTENSIONS'] | app.config['ALLOWED_EMR_EXTENSIONS']
-os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
+app.secret_key = os.environ.get('SECRET_KEY', 'default_strong_secret_key_12345')
 
-# ==========================================================
-# 🔬 GLOBAL MODEL CONFIG AND VARIABLE
-# ==========================================================
-MODEL_REPO = 'minhtriizkooooo/EMR-Analysis-Cancer_Detection'
-MODEL_FILENAME = 'best_weights_model.keras'
-IMG_SIZE = (224, 224)
+# Use container-safe temp folder
+UPLOAD_FOLDER = '/tmp/uploads'
+# Đảm bảo thư mục được tạo với quyền tồn tại
+os.makedirs(UPLOAD_FOLDER, exist_ok=True) 
+app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
+app.config['ALLOWED_EXTENSIONS'] = {'csv', 'xlsx', 'xls', 'png', 'jpg', 'jpeg', 'gif', 'bmp'}
 
-# KHỞI TẠO model = None ở mức toàn cục
-model = None 
+# --- Model config ---
+MODEL_PATH = 'models/best_weights_model.keras'
+MODEL = None
+TARGET_SIZE = (240, 240)
 
-# ==========================================================
-# ⚙️ LOAD MODEL SAFELY
-# ==========================================================
 def load_keras_model():
-    """Load Keras model safely from Hugging Face"""
-    global model
-    
-    try:
-        logger.info("⏳ Downloading model from Hugging Face...")
-        # Note: hf_hub_download is blocking
-        model_path = hf_hub_download(repo_id=MODEL_REPO, filename=MODEL_FILENAME)
-        
-        # Note: load_model is blocking
-        model = load_model(model_path, compile=False)
-        logger.info("✅ Model loaded successfully.")
-    except Exception as e:
-        logger.error(f"❌ Failed to load model: {str(e)}")
+    """Load model once at startup."""
+    global MODEL
+    if MODEL is None:
+        try:
+            logger.info("🔥 Loading Keras model from %s ...", MODEL_PATH)
+            MODEL = load_model(MODEL_PATH, compile=False)
+            logger.info("✅ Model loaded.")
+        except Exception as e:
+            logger.error("❌ Error loading model: %s", e)
+            MODEL = None
+    return MODEL
 
-# ==========================================================
-# 🧩 HELPER FUNCTIONS
-# ==========================================================
-def allowed_file(filename, allowed_extensions=app.config['ALLOWED_EXTENSIONS']):
-    """Check allowed file extension"""
-    return '.' in filename and filename.rsplit('.', 1)[1].lower() in allowed_extensions
+with app.app_context():
+    load_keras_model()
 
+# --- Helpers ---
+def allowed_file(filename):
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in app.config['ALLOWED_EXTENSIONS']
+
+def login_required(f):
+    def decorated_function(*args, **kwargs):
+        if 'user' not in session:
+            flash('Vui lòng đăng nhập để truy cập trang này.', 'danger')
+            return redirect(url_for('index'))
+        return f(*args, **kwargs)
+    decorated_function.__name__ = f.__name__
+    return decorated_function
+
+def preprocess_image(image_file):
+    """Preprocessing matched to Colab training (240x240 RGB, no rescale)."""
+    if not MODEL:
+        raise RuntimeError("Model is not loaded.")
+    img = load_img(image_file, target_size=TARGET_SIZE, color_mode='rgb')
+    arr = img_to_array(img)
+    arr = np.expand_dims(arr, axis=0)
+    # Tùy chỉnh: Nếu mô hình yêu cầu chuẩn hóa 0-1, thêm dòng này:
+    # arr = arr / 255.0
+    return arr
 
 
 
@@ -224,89 +217,40 @@ def emr_profile():
 # --------------------------------------------------------
 # 2️⃣ MEDICAL IMAGE PREDICTION (KERAS)
 # --------------------------------------------------------
-@app.route('/emr_prediction', methods=['GET', 'POST'])
+app.route('/emr_prediction', methods=['GET','POST'])
+@login_required
 def emr_prediction():
-    """Handle EMR image prediction"""
-    if not session.get('logged_in'):
-        flash('Vui lòng đăng nhập để truy cập trang dự đoán.', 'danger')
-        return redirect(url_for('login'))
-
+    prediction_result, filename, image_b64 = None, None, None
     if request.method == 'POST':
-        file = request.files.get('file')
-        if not file or file.filename == '':
-            flash('Chưa chọn file ảnh.', 'danger')
-            return redirect(url_for('emr_prediction'))
-
-        # Check for image file extensions
-        if not allowed_file(file.filename, app.config['ALLOWED_IMAGE_EXTENSIONS']):
-            flash('Chỉ chấp nhận file ảnh (PNG, JPG, JPEG, GIF, BMP).', 'danger')
-            return redirect(url_for('emr_prediction'))
-
-        filename = secure_filename(file.filename)
-        file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-        file.save(file_path)
-
-        img_array = preprocess_image(file_path)
-        if img_array is None:
-            flash('Lỗi khi xử lý hình ảnh.', 'danger')
-            return redirect(url_for('emr_prediction'))
-
+        uploaded = request.files.get('file')
+        if not uploaded or uploaded.filename == '':
+            flash('Vui lòng chọn file hình ảnh.', 'danger')
+            return redirect(request.url)
+        if not allowed_file(uploaded.filename):
+            flash('Định dạng file không được hỗ trợ.', 'danger')
+            return redirect(request.url)
+        filename = secure_filename(uploaded.filename)
+        data = uploaded.read()
+        image_b64 = base64.b64encode(data).decode('utf-8')
+        image_stream = io.BytesIO(data)
         try:
-            # Check if model is loaded globally by the Master process
-            global model
-            if model is None:
-                flash('Mô hình AI chưa được tải. Vui lòng kiểm tra logs để biết lỗi tải mô hình.', 'danger')
-                return redirect(url_for('emr_prediction'))
+            processed = preprocess_image(image_stream)
+            preds = MODEL.predict(processed)
+            logger.info("Raw model output: %s", preds.tolist())
+            # FIX: Giả sử mô hình trả về [0] là Non-nodule và [1] là Nodule (hoặc chỉ trả về xác suất Nodule)
+            # Dùng logic an toàn cho cả 1 và 2 chiều (giả sử chỉ trả về xác suất Nodule)
+            p_nodule = float(preds[0][0]) if preds.ndim == 2 and preds.shape[1] >= 1 else float(preds[0])
 
-            # BƯỚC QUAN TRỌNG: Gọi predict
-            input_tensor = tf.convert_to_tensor(img_array, dtype=tf.float32)
-            pred = model.predict(input_tensor, verbose=0)
-            
-            # 👇 THÊM DỌN DẸP BỘ NHỚ SAU DỰ ĐOÁN (Chống OOM)
-            K.clear_session() 
-            gc.collect()
-            logger.info("✅ Keras/TF session and Python garbage collected.")
-            # 👆 KẾT THÚC DỌN DẸP BỘ NHỚ
-
-            # Assuming binary classification where pred[0][0] is the probability of the positive class
-            probability = float(pred[0][0])
-            result = 'Nodule' if probability > 0.5 else 'Non-nodule'
-            
-            # Store prediction data in session
-            session['prediction_result'] = {
-                'result': result,
-                'probability': round(probability * 100, 2),
-                'filename': filename,
-                'image_b64': image_to_base64(file_path),
-                'mime_type': mimetypes.guess_type(file_path)[0] or 'image/jpeg'
-            }
-            
-            flash(f'Dự đoán hoàn tất: {result} với xác suất {round(probability * 100, 2)}%.', 'success')
-            return redirect(url_for('emr_prediction'))
-
+            label = 'Nodule' if p_nodule >= 0.5 else 'Non-nodule'
+            prob = p_nodule if p_nodule >= 0.5 else 1.0 - p_nodule
+            prediction_result = {'result': label, 'probability': float(np.round(prob,6)), 'raw_output': float(np.round(p_nodule,6))}
+            flash('Dự đoán AI hoàn tất.', 'success')
         except Exception as e:
-            logger.error(f"❌ Prediction error: {str(e)}")
-            flash('Lỗi khi dự đoán hình ảnh. Có thể do timeout.', 'danger')
-            
-            # DỌN DẸP BỘ NHỚ KỂ CẢ KHI CÓ LỖI
-            try:
-                K.clear_session()
-                gc.collect()
-            except:
-                pass
-            
-            return redirect(url_for('emr_prediction'))
+            logger.error("Error during prediction: %s", e)
+            flash(f'Lỗi khi xử lý hình ảnh hoặc dự đoán: {e}', 'danger')
+            return redirect(request.url)
+    return render_template('emr_prediction.html', prediction=prediction_result, filename=filename, image_b64=image_b64)
 
-    # Retrieve and clear prediction data for GET request (display results)
-    prediction_data = session.pop('prediction_result', None)
-
-    return render_template(
-        'emr_prediction.html',
-        prediction=prediction_data,
-        uploaded_image=None, 
-        image_b64=None if not prediction_data else prediction_data['image_b64'],
-        filename=None if not prediction_data else prediction_data['filename']
-    )
 
 
 # --------------------------------------------------------
@@ -316,4 +260,5 @@ if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     logger.info(f"🚀 EMR AI is running on port {port}")
     app.run(host="0.0.0.0", port=port, debug=False, threaded=False)
+
 
