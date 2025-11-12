@@ -12,10 +12,12 @@ from flask import (
     Flask, flash, redirect, render_template, request, session, url_for
 )
 from werkzeug.utils import secure_filename
+# Sử dụng tải Keras model từ tensorflow.keras
 from tensorflow.keras.models import load_model
 from tensorflow.keras.preprocessing.image import load_img, img_to_array
 from PIL import Image
 from functools import wraps
+# Đảm bảo đã cài đặt ydata-profiling
 from ydata_profiling import ProfileReport
 
 # === LOGGING ===
@@ -37,6 +39,7 @@ ALLOWED_DATA_EXT = {'csv', 'xls', 'xlsx'}
 MODEL_FOLDER = "models"
 os.makedirs(MODEL_FOLDER, exist_ok=True)
 MODEL_PATH = os.path.join(MODEL_FOLDER, "best_weights_model.keras")
+# URL tải mô hình từ Hugging Face
 HF_MODEL_URL = "https://huggingface.co/spaces/minhtriizkooooo/EMR-Analysis-Cancer-Detection/resolve/main/models/best_weights_model.keras"
 
 # === LOAD MODEL ONCE (Eager Loading) ===
@@ -70,6 +73,7 @@ def safe_thumbnail(img_bytes, size=200):
     """Tạo thumbnail an toàn cho ảnh hiển thị trên giao diện."""
     try:
         img = Image.open(io.BytesIO(img_bytes))
+        # Sử dụng Lanczos (tên mới của ANTIALIAS)
         img.thumbnail((size, size), Image.Resampling.LANCZOS)
         buf = io.BytesIO()
         img.save(buf, 'JPEG', quality=85)
@@ -88,12 +92,14 @@ def login_required(f):
 
 # === ROUTES ===
 @app.route("/")
-def home(): return redirect(url_for("login"))
+def home(): 
+    return redirect(url_for("login"))
 
 @app.route("/login", methods=["GET", "POST"])
 def login():
     """Xử lý đăng nhập."""
     if request.method == "POST":
+        # Thông tin đăng nhập demo
         if request.form.get("userID") == "user_demo" and request.form.get("password") == "Test@123456":
             session['user'] = "user_demo"
             return redirect(url_for("dashboard"))
@@ -156,6 +162,7 @@ def emr_profile():
             # Giới hạn số dòng để tránh lỗi OOM và Timeout trên Render Free Tier
             if len(df) > 2000:
                 df_size = len(df)
+                # Lấy mẫu ngẫu nhiên 2000 dòng để phân tích
                 df = df.sample(2000, random_state=42)
                 flash(f"File có {df_size} dòng. Đang phân tích mẫu 2000 dòng để tránh Timeout và Crash.", "warning")
 
@@ -216,6 +223,7 @@ def emr_prediction():
                 tmp.write(img_bytes)
                 tmp_path = tmp.name
 
+            # Tải ảnh, resize và chuẩn hóa
             img = load_img(tmp_path, target_size=(240, 240))
             arr = img_to_array(img) / 255.0
             arr = np.expand_dims(arr, axis=0)
@@ -231,7 +239,7 @@ def emr_prediction():
             logger.error(f"Predict error: {e}")
             flash(f"❌ Lỗi AI: {e}", "danger")
         finally:
-            # Đảm bảo xóa file tạm
+            # Đảm bảo xóa file tạm sau khi sử dụng
             if tmp_path and os.path.exists(tmp_path):
                 os.remove(tmp_path)
 
@@ -251,11 +259,9 @@ if __name__ == "__main__":
 ```
 eof
 
-Bạn hãy sao chép toàn bộ mã nguồn trên và thay thế nội dung file `app.py` trong dự án của mình.
+Bạn chỉ cần sao chép toàn bộ nội dung nằm trong khối code trên để thay thế cho file `app.py` hiện tại.
 
-**Lưu ý quan trọng cuối cùng:**
-
-Sau khi cập nhật file `app.py`, bạn **bắt buộc** phải kiểm tra lại lệnh **Start Command** trên Render và đặt nó thành:
+**Quan trọng:** Sau khi cập nhật file, nhớ kiểm tra lại lệnh **Start Command** trên Render. Nó **phải là**:
 
 ```bash
 gunicorn app:app --timeout 120
