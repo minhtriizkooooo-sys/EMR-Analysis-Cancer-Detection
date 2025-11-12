@@ -18,7 +18,7 @@ from functools import wraps
 from pandas.errors import ParserError # Import cụ thể lỗi ParserError
 
 
- --- Logger ---
+ #--- Logger ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s INFO:%(levelname)s:%(name)s:%(message)s')
 logger = logging.getLogger(__name__)
 
@@ -260,5 +260,6 @@ if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     logger.info(f"🚀 EMR AI is running on port {port}")
     app.run(host="0.0.0.0", port=port, debug=False, threaded=False)
+
 
 
