@@ -198,7 +198,7 @@ def emr_profile():
                 {summary['missing']}
             </div>
             """
-            flash("✅ Phân tích dữ liệu hoàn thành!", "success")
+            #flash("✅ Phân tích dữ liệu hoàn thành!", "success")
 
         except Exception as e:
             logger.error(f"Error in data analysis: {e}")
@@ -274,3 +274,4 @@ if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     logger.info(f"🚀 EMR AI is running on port {port}")
     app.run(host="0.0.0.0", port=port, debug=False, threaded=False)
+
