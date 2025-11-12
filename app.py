@@ -27,10 +27,14 @@ MODEL_PATH = os.path.join(MODEL_FOLDER, "best_weights_model.keras")
 if not os.path.exists(MODEL_PATH):
     try:
         print("⚠️ Model not found locally, downloading from Hugging Face...")
+
+        # ✅ FIXED: thêm repo_type="space" để tải đúng từ Hugging Face Spaces
         MODEL_PATH = hf_hub_download(
             repo_id="minhtriizkooooo/EMR-Analysis-Cancer-Detection",
-            filename="models/best_weights_model.keras"
+            filename="models/best_weights_model.keras",
+            repo_type="space"  # <--- Quan trọng
         )
+
         print(f"✅ Model downloaded successfully: {MODEL_PATH}")
     except Exception as e:
         raise FileNotFoundError(f"❌ Failed to download model from Hugging Face: {e}")
