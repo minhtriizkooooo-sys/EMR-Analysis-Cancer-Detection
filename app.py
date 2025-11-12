@@ -21,15 +21,12 @@ from functools import wraps
 from ydata_profiling import ProfileReport
 
 # === LOGGING ===
-# Thiết lập logging cơ bản để dễ dàng theo dõi trên Render logs
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 # === FLASK SETUP ===
 app = Flask(__name__)
-# Đảm bảo secret key được đặt
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", "emr-secure-2025")
-# Tăng giới hạn nội dung để cho phép tải file data/ảnh lớn hơn
 app.config['MAX_CONTENT_LENGTH'] = 10 * 1024 * 1024  # 10MB
 MAX_FILE_SIZE_MB = 10
 ALLOWED_IMG_EXT = {'png', 'jpg', 'jpeg', 'bmp'}
@@ -40,7 +37,6 @@ MODEL_FOLDER = "models"
 os.makedirs(MODEL_FOLDER, exist_ok=True)
 MODEL_PATH = os.path.join(MODEL_FOLDER, "best_weights_model.keras")
 # URL tải mô hình từ Hugging Face
-# Đã sửa lỗi: Loại bỏ ký tự Markdown khỏi URL
 HF_MODEL_URL = "https://huggingface.co/spaces/minhtriizkooooo/EMR-Analysis-Cancer-Detection/resolve/main/models/best_weights_model.keras"
 
 # === LOAD MODEL ONCE (Eager Loading) ===
@@ -48,8 +44,8 @@ model = None
 try:
     if not os.path.exists(MODEL_PATH):
         logger.info("Downloading model from HF...")
-        # Tăng timeout cho quá trình tải model, phòng trường hợp mạng chậm
-        r = requests.get(HF_MODEL_URL, stream=True, timeout=180) 
+        # Tăng timeout tải model lên 5 phút (300 giây) để tránh lỗi 502 khi khởi động
+        r = requests.get(HF_MODEL_URL, stream=True, timeout=300) 
         r.raise_for_status()
         with open(MODEL_PATH, "wb") as f:
             for chunk in r.iter_content(8192):
@@ -74,7 +70,6 @@ def safe_thumbnail(img_bytes, size=200):
     """Tạo thumbnail an toàn cho ảnh hiển thị trên giao diện."""
     try:
         img = Image.open(io.BytesIO(img_bytes))
-        # Sử dụng Lanczos (tên mới của ANTIALIAS)
         img.thumbnail((size, size), Image.Resampling.LANCZOS)
         buf = io.BytesIO()
         img.save(buf, 'JPEG', quality=85)
@@ -100,7 +95,6 @@ def home():
 def login():
     """Xử lý đăng nhập."""
     if request.method == "POST":
-        # Thông tin đăng nhập demo
         if request.form.get("userID") == "user_demo" and request.form.get("password") == "Test@123456":
             session['user'] = "user_demo"
             return redirect(url_for("dashboard"))
@@ -126,7 +120,7 @@ def health():
     """Route kiểm tra trạng thái dịch vụ (Health Check)."""
     return {"status": "ok", "model_loaded": model is not None}, 200
 
-# === EMR PROFILE: SỬA LỖI LOGIC VÀ TỐI ƯU HÓA TỐC ĐỘ ===
+# === EMR PROFILE: ĐÃ TỐI ƯU PANDAS & YDATA ===
 @app.route("/emr_profile", methods=["GET", "POST"])
 @login_required
 def emr_profile():
@@ -146,29 +140,28 @@ def emr_profile():
             return render_template("emr_profile.html")
 
         try:
-            # Đọc bytes từ file và kiểm tra kích thước
             file_bytes = file.read()
             if len(file_bytes) > MAX_FILE_SIZE_MB * 1024 * 1024:
                 flash(f"File quá lớn (> {MAX_FILE_SIZE_MB}MB).", "danger")
                 return render_template("emr_profile.html")
 
             stream = io.BytesIO(file_bytes)
-            # Kiểm tra đuôi file để đọc đúng định dạng
+            
+            # Đọc dữ liệu với tối ưu hóa
             if filename.lower().endswith('.csv'):
-                df = pd.read_csv(stream)
+                # Dùng engine mặc định và tối ưu bộ nhớ
+                df = pd.read_csv(stream, low_memory=False) 
             else:
-                df = pd.read_excel(stream)
+                # Dùng engine openpyxl cho Excel
+                df = pd.read_excel(stream, engine='openpyxl') 
 
-            # === TỐI ƯU HÓA: PROFILE NHANH VÀ NHẸ ===
-            # Giới hạn số dòng để tránh lỗi OOM và Timeout trên Render Free Tier
+            # === TỐI ƯU HÓA CHO RENDER ===
             if len(df) > 2000:
                 df_size = len(df)
-                # Lấy mẫu ngẫu nhiên 2000 dòng để phân tích
                 df = df.sample(2000, random_state=42)
                 flash(f"File có {df_size} dòng. Đang phân tích mẫu 2000 dòng để tránh Timeout và Crash.", "warning")
 
-            # Sử dụng minimal=True để đạt tốc độ nhanh nhất và tránh lỗi logic phức tạp
-            flash("🕒 Đang tạo báo cáo chuyên sâu (chế độ TỐC ĐỘ CAO). Quá trình này có thể mất đến 1-2 phút tùy kích thước file.", "info")
+            flash("🕒 Đang tạo báo cáo chuyên sâu (chế độ TỐC ĐỘ CAO). Quá trình này **YÊU CẦU Gunicorn Timeout lớn**.", "info")
             profile = ProfileReport(
                 df,
                 title=f"Phân tích Dữ liệu EMR: {filename}",
@@ -208,28 +201,23 @@ def emr_prediction():
             flash("Chỉ hỗ trợ JPG, PNG, BMP.", "danger")
             return render_template("emr_prediction.html")
 
-        # Đọc bytes, kiểm tra kích thước
         img_bytes = file.read()
         if len(img_bytes) > MAX_FILE_SIZE_MB * 1024 * 1024:
             flash(f"Ảnh >{MAX_FILE_SIZE_MB}MB.", "danger")
             return render_template("emr_prediction.html")
 
-        # Tạo thumbnail để hiển thị
         image_b64 = safe_thumbnail(img_bytes)
 
         tmp_path = None
         try:
-            # Lưu vào file tạm thời (cần thiết cho load_img của Keras/PIL)
             with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(filename)[1]) as tmp:
                 tmp.write(img_bytes)
                 tmp_path = tmp.name
 
-            # Tải ảnh, resize và chuẩn hóa
             img = load_img(tmp_path, target_size=(240, 240))
             arr = img_to_array(img) / 255.0
             arr = np.expand_dims(arr, axis=0)
 
-            # Dự đoán
             prob = float(model.predict(arr, verbose=0)[0][0])
             result = "Nodule (Có khối u)" if prob > 0.5 else "Non-nodule (Không có khối u)"
             prediction = {"result": result, "probability": prob}
@@ -240,7 +228,6 @@ def emr_prediction():
             logger.error(f"Predict error: {e}")
             flash(f"❌ Lỗi AI: {e}", "danger")
         finally:
-            # Đảm bảo xóa file tạm sau khi sử dụng
             if tmp_path and os.path.exists(tmp_path):
                 os.remove(tmp_path)
 
@@ -255,5 +242,4 @@ def emr_prediction():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     logger.info(f"EMR AI starting on port {port}")
-    # Chạy Flask ở chế độ non-threaded để tương thích tốt hơn với Gunicorn
     app.run(host="0.0.0.0", port=port, debug=False, threaded=False)
